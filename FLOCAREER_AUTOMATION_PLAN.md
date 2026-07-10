@@ -26,6 +26,397 @@ the synthetic interviewer voice throughout the interview.
 
 ---
 
+## Current Implementation Status (2026-07-10)
+
+This section is the execution checkpoint for a new development session. The
+sections below it remain the detailed target specification. When this status
+section and a later milestone section disagree about what is already built,
+this status section is authoritative.
+
+### Repository and operating baseline
+
+```text
+Repository: https://github.com/akashiitd/flo_automation
+Default branch: main
+Python environment: uv
+FloCareer starting URL: https://app.flocareer.com/
+Authentication: manual in a persistent local Playwright profile
+Local LLM: ornith-1.0-35b through LM Studio
+Cloud fallback: OpenRouter, only after explicit configuration opt-in
+Transcription: existing Meeting_transcriber_with_LLM Apple Speech backend
+```
+
+Start every new session by reading:
+
+```text
+README.md
+FLOCAREER_AUTOMATION_PLAN.md
+git status -sb
+git log -3 --oneline
+```
+
+Never request or paste FloCareer credentials, OTPs, or API keys into chat,
+source files, logs, screenshots, tests, or commits. Authentication is performed
+by the human in the local persistent browser.
+
+### Verified quality baseline
+
+The following gates passed before this checkpoint was written:
+
+```text
+uv run pytest
+    -> 22 passed
+
+uv run ruff check .
+    -> passed
+
+uv run ruff format --check .
+    -> passed
+
+uvx ty check app browser evaluator llm transcriber main.py
+    -> passed
+
+uv run python main.py health
+    -> Overall: READY_FOR_BROWSER_SCAN
+```
+
+Supertonic is not running yet and is intentionally reported as an optional
+health warning.
+
+### Milestone status matrix
+
+| Milestone | Status | Evidence |
+| --- | --- | --- |
+| Project skeleton and configuration | Complete | `.env.example`, typed settings, safe config dump, ignored runtime/secrets |
+| 1. Health check | Complete | Python, runs directory, transcriber, Apple Speech, LM Studio, OpenRouter, Playwright, optional Supertonic |
+| 2. Provider router and evaluator | Complete | LM Studio and OpenRouter return the same validated schema; JSON repair, strict retry, timeout, low-confidence routing, PII redaction, usage logging |
+| 3. Apple Speech system audio | Complete | Real macOS system audio captured as `system` / `Other`; microphone remained off; JSON and text persisted |
+| 4. Browser dashboard scan | Complete | Persistent manual login, delayed-auth protection, loading protection, card/table extraction, screenshot, no launch action |
+| 5. Launch and join interview | Not started | **Next milestone: implement `join --candidate ... --dry-run` first** |
+| 6. Question extraction | Not started | Depends on a safely joined test interview |
+| 7. Code editor automation | Not started | Depends on question extraction and a coding-question fixture |
+| 8. Offline session evaluation | Not started | Single-answer evaluator exists; session-level aggregation does not |
+| 9. LangGraph controller | Not started | Depends on browser, transcription, evaluator, timer seams |
+| 10. Feedback autofill | Not started | Must remain behind preview and approval gates |
+| 11. Interview timer | Not started | Pure timer tests can be developed before live integration |
+| 12. Local dashboard | Not started | Depends on stable backend operations |
+| 13. Supertonic live voice | Not started | Postponed until text-only interview flow is stable |
+
+### What is implemented now
+
+#### Configuration and health
+
+```text
+main.py config-dump
+main.py health
+app/config.py
+app/health.py
+```
+
+- Loads defaults, `.env`, and environment overrides without printing secrets.
+- Uses `https://app.flocareer.com/` as the browser entry point.
+- Uses `../Meeting_transcriber_with_LLM` as the portable default transcriber
+  path; `.env` may override it with an absolute path.
+- Creates and verifies the `runs/` directory.
+- Launches and closes Playwright Chromium during health validation.
+- Validates OpenRouter only when cloud processing is explicitly enabled.
+
+#### LLM evaluation and provider routing
+
+```text
+llm/provider.py
+llm/lmstudio_provider.py
+llm/openrouter_provider.py
+llm/provider_router.py
+llm/schemas.py
+llm/json_repair.py
+llm/privacy_redactor.py
+llm/usage_tracker.py
+evaluator/scoring.py
+```
+
+- `ornith-1.0-35b` is the tested local fast and deep model.
+- Live local structured evaluation passed in approximately 3.5 to 4.1 seconds.
+- Live OpenRouter evaluation passed in approximately 3.7 seconds.
+- Both providers return score, rating, evidence, one follow-up, feedback, and
+  confidence through the same schema.
+- Fast and deep calls have hard wall-clock deadlines.
+- Local timeout, invalid output, or low confidence can route to OpenRouter only
+  when an API key and cloud-data consent are present.
+- OpenRouter requests always pass through deterministic PII redaction.
+- Usage records include provider, model, purpose, latency, tokens, estimated
+  cost, fallback reason, and whether redaction ran.
+
+#### Apple Speech system-audio capture
+
+```text
+transcriber/apple_speech_adapter.py
+transcriber/transcript_store.py
+main.py listen-test
+```
+
+- Reuses the external Meeting Transcriber project; no transcription engine was
+  rebuilt.
+- Starts Apple Speech with system audio enabled and microphone disabled.
+- Refuses to start `listen-test` when microphone capture is enabled.
+- Persists callbacks immediately and atomically into per-session JSON and text.
+- A real 60-second test captured nine system-audio segments with zero
+  microphone segments.
+
+#### Read-only FloCareer dashboard scan
+
+```text
+browser/playwright_controller.py
+browser/flocareer_page.py
+browser/selectors.py
+browser/screenshots.py
+main.py browser-scan
+```
+
+- Opens the root FloCareer application URL in headed persistent Chromium.
+- Waits through delayed logged-out dialogs and loading placeholders.
+- Requires dashboard readiness to remain stable before scanning.
+- Supports both table rows and the actual visible scheduled-interview card
+  layout.
+- Extracts candidate, role, company, date, and time without opening menus.
+- Saves a dashboard screenshot under the session directory.
+- Live validation extracted three scheduled cards and launched no interview.
+
+### Commands available now
+
+```bash
+uv run python main.py config-dump
+uv run python main.py health
+uv run python main.py llm-test --provider lmstudio
+uv run python main.py llm-test --provider openrouter
+uv run python main.py llm-failover-test
+uv run python main.py listen-test --seconds 60
+uv run python main.py browser-scan --login-timeout 180
+```
+
+Do not assume commands described later in this plan exist until they appear in
+`uv run python main.py --help`.
+
+### Current safety boundaries
+
+These restrictions must remain true while implementing later milestones:
+
+```text
+Allowed now:
+- Read configuration and health state.
+- Run local/cloud evaluator tests under configured privacy policy.
+- Capture system audio with microphone off.
+- Open FloCareer and read scheduled-interview cards.
+- Save local screenshots, transcripts, and action/usage logs.
+
+Not implemented or not authorized by default:
+- Launch Video Interview.
+- Click Join.
+- Enable a code editor in a live interview.
+- Fill feedback fields.
+- Click hang-up.
+- Click FINISH.
+- Run an unattended or undisclosed synthetic interviewer.
+```
+
+Runtime candidate data, transcripts, screenshots, browser profiles, `.env`, and
+API keys must remain excluded from Git. Public tests and documentation must use
+fictional candidate and company names.
+
+### Next milestone: guarded join dry-run
+
+The next session should implement only the dry-run half of Milestone 5 first:
+
+```bash
+uv run python main.py join --candidate "Candidate Name" --dry-run
+```
+
+#### Goal
+
+Prove that the automation can identify exactly one scheduled candidate and the
+candidate-scoped launch controls while making it impossible for dry-run mode to
+launch or join an interview.
+
+#### Proposed files
+
+```text
+browser/action_guard.py
+browser/action_router.py
+browser/join_workflow.py
+browser/flocareer_page.py       # add candidate-card lookup/menu locators
+browser/playwright_controller.py # reuse persistent context/session handling
+main.py                         # add join command
+tests/test_action_guard.py
+tests/test_join_workflow.py
+```
+
+Keep the browser modules deep: the CLI should ask one workflow operation to run
+and should not contain candidate-card selectors or click policy.
+
+#### Required action vocabulary
+
+Use an explicit enum or equivalent typed vocabulary rather than raw click names:
+
+```text
+OPEN_DASHBOARD
+FIND_CANDIDATE
+OPEN_CANDIDATE_MENU
+LAUNCH_INTERVIEW
+CLICK_JOIN
+HANG_UP
+FILL_FEEDBACK
+FINISH_INTERVIEW
+```
+
+The action guard must apply this policy:
+
+| Action | Dry run | Later approved live join |
+| --- | --- | --- |
+| Open dashboard | Allow | Allow |
+| Find/read candidate card | Allow | Allow |
+| Open candidate three-dot menu | Allow, then screenshot | Allow |
+| Read `Launch Video Interview` option | Allow | Allow |
+| Click `Launch Video Interview` | **Block** | Allow only after explicit join approval |
+| Click pre-call `Join` | **Block** | Allow only after separate explicit join approval |
+| Hang up | **Always block** | **Always block in automation** |
+| Fill feedback | Block | Block until Milestone 10 approval flow |
+| Click `FINISH` | **Always block** | Allow only through a future separate approval token |
+
+Opening a menu is reversible and permitted in dry-run. Clicking the launch,
+join, hang-up, or finish controls is not.
+
+#### Detailed dry-run flow
+
+```text
+1. Load configuration and health prerequisites.
+2. Open the persistent Playwright profile at https://app.flocareer.com/.
+3. Wait through login/loading using the existing stable-readiness logic.
+4. Extract scheduled cards using the existing card/table parser.
+5. Normalize the requested name for comparison only:
+   - trim whitespace
+   - collapse repeated spaces
+   - case-insensitive comparison
+   - do not use fuzzy matching for a live target
+6. Require exactly one exact normalized match.
+7. If there are zero matches, list sanitized available names and exit nonzero.
+8. If there are multiple matches, stop and require a stronger selector such as
+   candidate plus date/time; never choose the first match silently.
+9. Scope all subsequent locators to the matched candidate card.
+10. Save a `candidate_found.png` screenshot.
+11. Locate and open only that card's three-dot menu.
+12. Confirm exactly one visible `Launch Video Interview` menu item.
+13. Record that the launch control exists, but route the attempted launch
+    action through the guard and verify it is blocked by dry-run policy.
+14. Save a `join_dry_run.png` screenshot with the menu visible.
+15. Close the context without launching or joining.
+16. Write `runs/<session_id>/action_log.jsonl` with requested action, guard
+    decision, candidate identifier, timestamp, and screenshot path.
+17. Print `Validation passed: launch control found and blocked by dry run`.
+```
+
+Do not log credentials, authentication tokens, full page HTML, or unrelated
+candidate details.
+
+#### Automated test plan
+
+Develop in vertical TDD slices at the public workflow and guard seams:
+
+```text
+1. Candidate lookup finds one exact fictional candidate card.
+2. Lookup is case-insensitive but does not fuzzy-match a different name.
+3. Missing candidate returns a visible nonzero result.
+4. Duplicate candidate names stop as ambiguous.
+5. Candidate-scoped menu lookup does not select a neighboring card's menu.
+6. Dry-run guard allows opening the menu.
+7. Dry-run guard blocks LAUNCH_INTERVIEW.
+8. Dry-run guard blocks CLICK_JOIN, HANG_UP, and FINISH_INTERVIEW.
+9. Workflow writes an action log and screenshots.
+10. A spy/fake page proves no launch or join click occurred.
+```
+
+Use fictional candidates and companies in every fixture.
+
+#### Live validation plan
+
+Run only when at least one scheduled interview card is visible:
+
+```bash
+uv run python main.py browser-scan --login-timeout 180
+uv run python main.py join --candidate "Exact Visible Name" --dry-run
+```
+
+The human should watch the first live dry-run. The run passes only when:
+
+```text
+- The correct card is identified.
+- The correct card's three-dot menu opens.
+- `Launch Video Interview` is visible.
+- No interview page or pre-call page opens.
+- No Join, hang-up, feedback, or FINISH control is clicked.
+- Candidate-found and dry-run screenshots are saved.
+- action_log.jsonl records a BLOCK decision for LAUNCH_INTERVIEW.
+```
+
+If the FloCareer selector structure cannot be determined safely, save a
+screenshot and stop. Do not introduce coordinate clicks or Computer Use in this
+milestone merely to force progress.
+
+#### Definition of done for the next session
+
+```text
+uv run pytest                    -> all tests pass
+uv run ruff check .              -> pass
+uv run ruff format --check .     -> pass
+uvx ty check ...                 -> pass
+uv run python main.py health     -> READY_FOR_BROWSER_SCAN
+browser-scan                     -> scheduled cards found
+join --dry-run                   -> correct candidate, menu found, launch blocked
+git status -sb                   -> understood and intentional
+```
+
+Do not implement real launch/join in the same change unless the dry-run has
+passed and the user starts a separate request explicitly authorizing it.
+
+### Remaining execution order after join dry-run
+
+The detailed requirements remain in Milestones 5 through 13 below. Continue in
+this order and validate before advancing:
+
+1. **Approved real join:** add separate approval for launch and pre-call Join;
+   keep hang-up blocked.
+2. **Question extraction:** capture question text, rubric, ideal answer, coding
+   flag, and field locator hints into `questions.json`.
+3. **Code editor:** enable only the requested coding card and verify candidate
+   visibility from the toggle text.
+4. **Offline session evaluation:** map saved transcript segments to questions,
+   generate evidence-grounded per-question scores and final verdict files.
+5. **LangGraph controller:** add explicit state transitions and human approval
+   gates; start with simulation fixtures, not a live interview.
+6. **Timer:** implement pure timer events and orchestration reactions before
+   wiring it into a live session.
+7. **Feedback autofill:** preview first, fill only after approval, and keep
+   `FINISH` behind a separate final approval.
+8. **Local dashboard:** expose already-tested backend actions without moving
+   safety policy into UI button handlers.
+9. **Supertonic:** test service/voice quality independently, then click-to-speak,
+   then interruptible duplex routing; never build a hidden clone mode.
+
+### Required human inputs in later sessions
+
+The human may need to provide or perform only the following:
+
+- Sign in manually in the persistent FloCareer Chromium profile.
+- Identify an exact scheduled candidate for a dry-run.
+- Approve any future real launch and join action separately.
+- Confirm organizational and candidate consent before synthetic voice use.
+- Approve cloud candidate-data processing before OpenRouter is enabled.
+- Review feedback evidence and explicitly approve any future final submission.
+
+Credentials, OTPs, API keys, and private interview data should never be pasted
+into the development conversation.
+
+---
+
 ## 0. Known Local Context
 
 ### Main automation workspace
@@ -73,6 +464,7 @@ http://127.0.0.1:1234/v1
 Already detected local models:
 
 ```text
+ornith-1.0-35b
 google/gemma-4-12b
 qwen/qwen3.6-35b-a3b
 google/gemma-4-31b
@@ -83,13 +475,16 @@ cohere-transcribe-03-2026-mlx
 qwen3-asr-1.7b
 ```
 
-Recommended local LLM order:
+Current tested local LLM policy:
 
 ```text
-1. google/gemma-4-12b for fast follow-ups and feedback drafts
-2. qwen/qwen3.6-35b-a3b for deeper final verdicts
-3. OpenRouter fallback if local output quality is weak
+1. ornith-1.0-35b for fast follow-ups and feedback drafts
+2. ornith-1.0-35b for deeper verdicts until session-level verdict tests exist
+3. OpenRouter fallback on timeout, invalid output, or low confidence when allowed
 ```
+
+Gemma and Qwen remain installed alternatives, but they are not the configured
+default at this checkpoint.
 
 ### LLM provider strategy
 
@@ -351,8 +746,8 @@ LLM_ALLOW_CLOUD_CANDIDATE_DATA=false
 # Local LM Studio provider
 LMSTUDIO_BASE_URL=http://127.0.0.1:1234/v1
 LMSTUDIO_API_KEY=lm-studio
-LMSTUDIO_FAST_MODEL=google/gemma-4-12b
-LMSTUDIO_DEEP_MODEL=qwen/qwen3.6-35b-a3b
+LMSTUDIO_FAST_MODEL=ornith-1.0-35b
+LMSTUDIO_DEEP_MODEL=ornith-1.0-35b
 
 # OpenRouter provider
 OPENROUTER_API_KEY=
@@ -371,7 +766,7 @@ TRANSCRIBE_MICROPHONE=false
 # Browser
 BROWSER_HEADLESS=false
 BROWSER_USER_DATA_DIR=.browser-profile
-FLOCAREER_URL=https://app.flocareer.com/interviewer/
+FLOCAREER_URL=https://app.flocareer.com/
 
 # Optional Supertonic
 SUPERTONIC_BASE_URL=http://127.0.0.1:7788
@@ -386,7 +781,7 @@ REQUIRE_APPROVAL_BEFORE_FINISH=true
 Test after creating `.env`:
 
 ```bash
-python main.py config-dump
+uv run python main.py config-dump
 ```
 
 Pass criteria:
@@ -425,7 +820,7 @@ Build a single command that checks whether the local environment is ready.
 ### Command
 
 ```bash
-python main.py health
+uv run python main.py health
 ```
 
 ### Expected output
@@ -437,7 +832,7 @@ Health check
 [OK] Meeting_transcriber_with_LLM path found
 [OK] Apple Speech adapter found
 [OK] LM Studio reachable
-[OK] Local models found: google/gemma-4-12b, qwen/qwen3.6-35b-a3b
+[OK] Local models found: ornith-1.0-35b
 [OK] LLM primary provider: lmstudio
 [WARN] OpenRouter fallback disabled because cloud candidate data is not allowed
 [OK] Playwright browser launch
@@ -509,7 +904,7 @@ Provider classes must return normalized metadata:
 ```json
 {
   "provider": "lmstudio",
-  "model": "google/gemma-4-12b",
+  "model": "ornith-1.0-35b",
   "latency_ms": 1840,
   "input_tokens": 1220,
   "output_tokens": 310,
@@ -549,9 +944,9 @@ Expected evaluator output:
 ### Command
 
 ```bash
-python main.py llm-test --provider lmstudio
-python main.py llm-test --provider openrouter
-python main.py llm-failover-test
+uv run python main.py llm-test --provider lmstudio
+uv run python main.py llm-test --provider openrouter
+uv run python main.py llm-failover-test
 ```
 
 ### Pass criteria
@@ -646,7 +1041,7 @@ enable_microphone=false   -> avoid capturing your voice or AI TTS output
 ### Command
 
 ```bash
-python main.py listen-test --seconds 60
+uv run python main.py listen-test --seconds 60
 ```
 
 ### Manual test setup
@@ -702,7 +1097,7 @@ save_screenshot(name)
 ### Command
 
 ```bash
-python main.py browser-scan
+uv run python main.py browser-scan --login-timeout 180
 ```
 
 ### Expected behavior
@@ -711,7 +1106,7 @@ python main.py browser-scan
 2. Navigate to:
 
 ```text
-https://app.flocareer.com/interviewer/
+https://app.flocareer.com/
 ```
 
 3. If login is required, stop and ask user to login manually.
@@ -763,13 +1158,13 @@ Join button
 ### Command
 
 ```bash
-python main.py join --candidate "Candidate Name"
+uv run python main.py join --candidate "Candidate Name"
 ```
 
 Add dry-run support:
 
 ```bash
-python main.py join --candidate "Candidate Name" --dry-run
+uv run python main.py join --candidate "Candidate Name" --dry-run
 ```
 
 ### Pass criteria
@@ -819,7 +1214,7 @@ For each question:
 ### Command
 
 ```bash
-python main.py extract-questions
+uv run python main.py extract-questions
 ```
 
 ### Expected output
@@ -866,7 +1261,7 @@ HIDE CODE EDITOR TO CANDIDATE -> currently visible, correct state
 ### Command
 
 ```bash
-python main.py enable-code-editor --question 9 --language Python
+uv run python main.py enable-code-editor --question 9 --language Python
 ```
 
 ### Expected output
@@ -904,7 +1299,7 @@ runs/test_session/transcript.json
 ### Command
 
 ```bash
-python main.py evaluate --session runs/test_session
+uv run python main.py evaluate --session runs/test_session
 ```
 
 ### Expected output
@@ -1036,7 +1431,7 @@ ERROR
 ### Command
 
 ```bash
-python main.py simulate-interview --session runs/test_session
+uv run python main.py simulate-interview --session runs/test_session
 ```
 
 ### Pass criteria
@@ -1075,13 +1470,13 @@ FINISH button
 ### Command
 
 ```bash
-python main.py fill-feedback --session runs/<session_id>
+uv run python main.py fill-feedback --session runs/<session_id>
 ```
 
 Approval mode:
 
 ```bash
-python main.py fill-feedback --session runs/<session_id> --approve
+uv run python main.py fill-feedback --session runs/<session_id> --approve
 ```
 
 ### Safety rule
@@ -1134,7 +1529,7 @@ time over
 ### Command
 
 ```bash
-python main.py timer-demo --minutes 1
+uv run python main.py timer-demo --minutes 1
 ```
 
 ### Pass criteria
@@ -1186,7 +1581,7 @@ Stop
 ### Command
 
 ```bash
-python main.py ui
+uv run python main.py ui
 ```
 
 ### Pass criteria
@@ -1257,7 +1652,7 @@ curl -X POST http://127.0.0.1:7788/v1/tts \
 ### Test command
 
 ```bash
-python main.py tts-test --text "Let us move to the coding question."
+uv run python main.py tts-test --text "Let us move to the coding question."
 ```
 
 ### Pass criteria
@@ -1393,24 +1788,32 @@ Avoid paid cloud browsers for v1.
 
 ## 19. Testing Matrix
 
-Run these tests in order.
+Run tests in order and do not advance past a failed gate. The first six live
+gates are complete at this checkpoint; later commands are planned and do not
+exist yet.
 
 ```text
-1. python main.py health
-2. python main.py llm-test --provider lmstudio
-3. python main.py llm-test --provider openrouter
-4. python main.py llm-failover-test
-5. python main.py listen-test --seconds 60
-6. python main.py browser-scan
-7. python main.py join --candidate "Test Candidate" --dry-run
-8. python main.py extract-questions
-9. python main.py enable-code-editor --question 9 --language Python
-10. python main.py evaluate --session runs/test_session
-9. python main.py simulate-interview --session runs/test_session
-10. python main.py fill-feedback --session runs/test_session
-11. python main.py timer-demo --minutes 1
-12. python main.py ui
-13. python main.py tts-test --text "Hello, let us start."
+COMPLETED
+1. uv run python main.py health
+2. uv run python main.py llm-test --provider lmstudio
+3. uv run python main.py llm-test --provider openrouter
+4. uv run python main.py llm-failover-test
+5. uv run python main.py listen-test --seconds 60
+6. uv run python main.py browser-scan --login-timeout 180
+
+NEXT
+7. uv run python main.py join --candidate "Candidate Name" --dry-run
+
+PLANNED AFTER JOIN DRY-RUN
+8. uv run python main.py join --candidate "Candidate Name"
+9. uv run python main.py extract-questions
+10. uv run python main.py enable-code-editor --question 9 --language Python
+11. uv run python main.py evaluate --session runs/test_session
+12. uv run python main.py simulate-interview --session runs/test_session
+13. uv run python main.py timer-demo --minutes 1
+14. uv run python main.py fill-feedback --session runs/test_session
+15. uv run python main.py ui
+16. uv run python main.py tts-test --text "Hello, let us start."
 ```
 
 Do not move to the next test until the current one passes.
@@ -1422,9 +1825,9 @@ Do not move to the next test until the current one passes.
 ### Before interview
 
 ```bash
-python main.py health
-python main.py browser-scan
-python main.py llm-test
+uv run python main.py health
+uv run python main.py browser-scan --login-timeout 180
+uv run python main.py llm-test --provider lmstudio
 ```
 
 Open LM Studio and preload chosen model.
@@ -1432,19 +1835,23 @@ Open LM Studio and preload chosen model.
 Recommended:
 
 ```text
-google/gemma-4-12b
+ornith-1.0-35b
 ```
 
-If using deeper local verdict:
+The same model is currently configured for deeper local verdict work:
 
 ```text
-qwen/qwen3.6-35b-a3b
+ornith-1.0-35b
 ```
+
+The rest of this live runbook is a target workflow, not an available production
+procedure. Do not use it until each referenced command has been implemented and
+validated in the testing matrix.
 
 ### Start interview
 
 ```bash
-python main.py start-session --candidate "Candidate Name" --minutes 25
+uv run python main.py start-session --candidate "Candidate Name" --minutes 25
 ```
 
 Expected actions:
@@ -1473,7 +1880,7 @@ Timer warnings
 ### Coding question
 
 ```bash
-python main.py enable-code-editor --question <id> --language Python
+uv run python main.py enable-code-editor --question <id> --language Python
 ```
 
 Or click UI button.
@@ -1481,8 +1888,8 @@ Or click UI button.
 ### After interview
 
 ```bash
-python main.py generate-final-verdict --session runs/<session_id>
-python main.py fill-feedback --session runs/<session_id>
+uv run python main.py generate-final-verdict --session runs/<session_id>
+uv run python main.py fill-feedback --session runs/<session_id>
 ```
 
 Then manually approve:
@@ -1570,9 +1977,9 @@ Apple Speech helper can run
 Try:
 
 ```text
-Use google/gemma-4-12b instead of qwen/qwen3.6-35b-a3b
+Preload ornith-1.0-35b before the interview
 Reduce context length
-Preload model before interview
+Use a smaller installed local model only after it passes the evaluator schema test
 Use OpenRouter fallback for final verdict
 ```
 
@@ -1615,31 +2022,33 @@ Stop automation. Use screenshot and question id mapping. Never click finish.
 
 ## 24. First Build Sprint
 
-The first sprint should implement only these:
+The first sprint is complete:
 
 ```text
-1. Project skeleton
-2. Health check
-3. LLM provider interface
-4. LM Studio evaluator test
-5. OpenRouter evaluator test
-6. LM Studio-to-OpenRouter failover test
-7. Apple Speech listen-test
-8. Browser scan dry run
+[DONE] 1. Project skeleton
+[DONE] 2. Health check
+[DONE] 3. LLM provider interface
+[DONE] 4. LM Studio evaluator test
+[DONE] 5. OpenRouter evaluator test
+[DONE] 6. LM Studio-to-OpenRouter failover test
+[DONE] 7. Apple Speech listen-test
+[DONE] 8. Browser scan dry run
 ```
 
-Definition of done:
+Verified definition of done:
 
 ```text
-python main.py health passes
-python main.py llm-test --provider lmstudio returns valid score JSON
-python main.py llm-test --provider openrouter returns the same schema
-python main.py llm-failover-test proves guarded provider failover
-python main.py listen-test captures Chrome/system audio
-python main.py browser-scan lists FloCareer interviews
+health passes with READY_FOR_BROWSER_SCAN
+LM Studio returns valid structured score JSON through ornith-1.0-35b
+OpenRouter returns the same schema after mandatory PII redaction
+failover test proves cloud-disabled blocking and allowed fallback routing
+listen-test captures Chrome/system audio with microphone off
+browser-scan lists scheduled FloCareer cards without launching interviews
+22 automated tests, lint, formatting, type-checking, and compilation pass
 ```
 
-After that, build join/question/code-editor/fill-feedback.
+The second sprint starts with join dry-run only. Do not combine dry-run and real
+join implementation into one unreviewed step.
 
 ---
 
@@ -1648,57 +2057,56 @@ After that, build join/question/code-editor/fill-feedback.
 Use this prompt in another session:
 
 ```text
-We are building a supervised FloCareer interview automation copilot.
-Workspace:
-/path/to/Flocarrer_Interview_Automation
+Continue the supervised FloCareer interview copilot in:
+https://github.com/akashiitd/flo_automation
 
-Existing transcription app:
-/path/to/Meeting_transcriber_with_LLM
+First read README.md and the "Current Implementation Status (2026-07-10)"
+section at the top of FLOCAREER_AUTOMATION_PLAN.md. Inspect git status and the
+latest commits before editing.
 
-Use local Playwright for browser automation.
-Use Computer Use only as a guarded visual fallback when Playwright fails.
-Use LM Studio local OpenAI-compatible API at:
-http://127.0.0.1:1234/v1
+Milestones 1-4 are complete and validated: health/config, LM Studio plus
+OpenRouter structured evaluation, Apple Speech system-audio capture, and a
+read-only persistent Playwright dashboard scan. The configured local model is
+ornith-1.0-35b. Do not rebuild these components.
 
-Use a provider-agnostic LLM router:
-- Primary provider: LM Studio
-- Fallback provider: OpenRouter
-- Redact candidate PII before cloud calls
-- Log provider, model, latency, token usage, and estimated cost
-- Do not send candidate data to the cloud unless configuration explicitly
-  allows it
+Implement only the next milestone:
+uv run python main.py join --candidate "Candidate Name" --dry-run
 
-Use the existing Apple Speech transcriber from Meeting_transcriber_with_LLM.
-For FloCareer candidate audio use system audio on and microphone off.
+Use TDD at the public action-guard and join-workflow seams. Add an explicit
+action vocabulary and guard. Dry-run may find the exact candidate, open that
+candidate's three-dot menu, verify the Launch Video Interview option, save
+screenshots/action_log.jsonl, and then stop. It must block Launch, Join,
+hang-up, feedback, and FINISH. Missing or duplicate candidate matches must stop
+visibly; never choose the first fuzzy match.
 
-Follow the plan in:
-FLOCAREER_AUTOMATION_PLAN.md
-
-Start with Milestone 1 to Milestone 5 only:
-health, LM Studio test, OpenRouter test, failover test, listen-test,
-browser-scan, join dry-run.
-Do not implement voice cloning yet.
-Do not auto-click FINISH without explicit approval.
+Use fictional candidate data in tests. Do not request credentials, OTPs, API
+keys, or real interview content. Do not use coordinate clicks or Computer Use
+to force selectors. Do not implement the real launch/join path in the same
+change. Run pytest, Ruff, ty, health, browser-scan, and one watched live dry-run.
+Review the change, commit it intentionally, and push only after validation.
 ```
 
 ---
 
 ## 26. Immediate Next Action
 
-Create the skeleton and implement:
+Implement the join dry-run described in the status section:
 
 ```bash
-python main.py health
+uv run python main.py join --candidate "Candidate Name" --dry-run
 ```
 
-Then test it.
-
-Only after health passes, implement:
+Start with the action guard and fictional Playwright fixtures. Run the existing
+baseline first:
 
 ```bash
-python main.py llm-test --provider lmstudio
-python main.py llm-test --provider openrouter
-python main.py llm-failover-test
-python main.py listen-test --seconds 60
-python main.py browser-scan
+git status -sb
+uv run pytest
+uv run ruff check .
+uvx ty check app browser evaluator llm transcriber main.py
+uv run python main.py health
+uv run python main.py browser-scan --login-timeout 180
 ```
+
+Do not click `Launch Video Interview` or `Join` during this milestone. A real
+join requires a later, separate explicit authorization after dry-run passes.
