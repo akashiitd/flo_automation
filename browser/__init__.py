@@ -1,0 +1,1 @@
+"""Guarded browser automation adapters."""
