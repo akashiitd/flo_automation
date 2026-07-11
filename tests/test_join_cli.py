@@ -140,6 +140,8 @@ def test_live_join_prompts_for_launch_consent_and_join_approvals(
         consent_screenshot=screenshots / "consent.png",
         pre_call_screenshot=screenshots / "pre_call.png",
         joined_screenshot=screenshots / "joined.png",
+        room_state_log_path=session_dir / "room_state_log.jsonl",
+        code_editor_result=None,
         action_log_path=session_dir / "action_log.jsonl",
     )
 
@@ -151,7 +153,13 @@ def test_live_join_prompts_for_launch_consent_and_join_approvals(
         progress: object,
         request_approval: Callable[[BrowserAction, str], str | None],
         wait_for_manual_end: Callable[[str], None],
+        enable_code_editor_question: int | None,
+        request_code_editor_approval: object,
+        candidate_wait_timeout_seconds: float | None,
     ) -> object:
+        assert enable_code_editor_question is None
+        assert request_code_editor_approval is None
+        assert candidate_wait_timeout_seconds is None
         for action in (
             BrowserAction.LAUNCH_INTERVIEW,
             BrowserAction.CLICK_CONSENT_OK,
@@ -187,3 +195,86 @@ def test_live_join_prompts_for_launch_consent_and_join_approvals(
     assert "Consent OK requires another approval when the form is shown" in output
     assert "The browser will remain open until you confirm it has ended" in output
     assert "interview joined after all required approvals" in output
+
+
+def test_live_join_requests_question_bound_editor_approval_after_connection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    candidate_identifier = "candidate-a1b2c3"
+    typed_tokens = iter(
+        [
+            approval_token_for(BrowserAction.LAUNCH_INTERVIEW, candidate_identifier),
+            approval_token_for(BrowserAction.CLICK_CONSENT_OK, candidate_identifier),
+            approval_token_for(BrowserAction.CLICK_JOIN, candidate_identifier),
+            approval_token_for(
+                BrowserAction.SHOW_CODE_EDITOR_TO_CANDIDATE,
+                candidate_identifier,
+                question_id=13,
+            ),
+            f"CONFIRM-INTERVIEW-ENDED {candidate_identifier}",
+        ]
+    )
+    session_dir = tmp_path / "runs" / "join_live_editor_test"
+    screenshots = session_dir / "screenshots"
+    screenshots.mkdir(parents=True)
+    result = SimpleNamespace(
+        candidate_identifier=candidate_identifier,
+        consent_screenshot=None,
+        pre_call_screenshot=screenshots / "pre_call.png",
+        joined_screenshot=screenshots / "joined.png",
+        room_state_log_path=session_dir / "room_state_log.jsonl",
+        action_log_path=session_dir / "action_log.jsonl",
+        code_editor_result=SimpleNamespace(
+            changed=True,
+            question_id=13,
+            before_screenshot=screenshots / "editor_before.png",
+            after_screenshot=screenshots / "editor_after.png",
+        ),
+    )
+
+    def fake_live_join(settings: object, **kwargs: object) -> object:
+        request = kwargs["request_approval"]
+        request_editor = kwargs["request_code_editor_approval"]
+        manual_end = kwargs["wait_for_manual_end"]
+        assert isinstance(request, Callable)
+        assert isinstance(request_editor, Callable)
+        assert kwargs["enable_code_editor_question"] == 13
+        for action in (
+            BrowserAction.LAUNCH_INTERVIEW,
+            BrowserAction.CLICK_CONSENT_OK,
+            BrowserAction.CLICK_JOIN,
+        ):
+            request(action, candidate_identifier)
+        request_editor(
+            BrowserAction.SHOW_CODE_EDITOR_TO_CANDIDATE, candidate_identifier, 13
+        )
+        manual_end(candidate_identifier)
+        return result
+
+    monkeypatch.setattr(cli, "join_candidate_live", fake_live_join)
+    monkeypatch.setattr(
+        cli,
+        "run_health_checks",
+        lambda settings: SimpleNamespace(overall="READY_FOR_BROWSER_SCAN"),
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt: next(typed_tokens))
+
+    exit_code = cli.main(
+        [
+            "join",
+            "--candidate",
+            "Candidate Alpha",
+            "--live",
+            "--enable-code-editor-question",
+            "13",
+        ],
+        project_root=tmp_path,
+        environ={},
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Code editor requires a separate candidate-and-question approval" in output
+    assert "Code editor: enabled for question 13" in output

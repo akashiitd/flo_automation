@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
@@ -15,6 +15,11 @@ from playwright.sync_api import sync_playwright
 from app.config import Settings
 from browser.action_guard import ActionGuard, BrowserAction
 from browser.action_router import ActionRouter
+from browser.code_editor_workflow import (
+    CandidateDisconnectedError,
+    CodeEditorApprovalRequester,
+    run_show_code_editor,
+)
 from browser.flocareer_page import FloCareerPage, ScheduledInterview
 from browser.join_workflow import (
     ApprovalRequester,
@@ -24,6 +29,7 @@ from browser.join_workflow import (
     run_join_live,
 )
 from browser.question_workflow import QuestionScanResult, run_question_scan
+from browser.room_workflow import InterviewRoomState, wait_for_candidate_connection
 from browser.screenshots import save_screenshot
 
 
@@ -196,10 +202,19 @@ def join_candidate_live(
     candidate_name: str,
     request_approval: ApprovalRequester,
     wait_for_manual_end: Callable[[str], None],
+    enable_code_editor_question: int | None = None,
+    request_code_editor_approval: CodeEditorApprovalRequester | None = None,
+    candidate_wait_timeout_seconds: float | None = None,
     login_timeout_seconds: float = 180,
     progress: Callable[[str], None] | None = None,
 ) -> JoinLiveResult:
-    """Launch and Join one candidate after two interactive approvals."""
+    """Keep one approved interview session open through candidate connection."""
+
+    if enable_code_editor_question is not None:
+        if enable_code_editor_question < 1:
+            raise ValueError("code-editor question must be positive")
+        if request_code_editor_approval is None:
+            raise ValueError("code-editor approval requester is required")
 
     report = progress or (lambda message: None)
     session_id = f"join_live_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -228,6 +243,47 @@ def join_candidate_live(
             session_dir=session_dir,
             action_router=router,
             request_approval=request_approval,
+        )
+        room = wait_for_candidate_connection(
+            flocareer,
+            session_dir=session_dir,
+            timeout_seconds=candidate_wait_timeout_seconds,
+            report=report,
+        )
+        editor_result = None
+        if enable_code_editor_question is not None:
+            if request_code_editor_approval is None:
+                raise AssertionError("validated editor approval requester is missing")
+            while True:
+                editor_router = ActionRouter(
+                    ActionGuard.code_editor(), session_dir / "action_log.jsonl"
+                )
+                try:
+                    editor_result = run_show_code_editor(
+                        flocareer,
+                        candidate_identifier=result.candidate_identifier,
+                        question_id=enable_code_editor_question,
+                        session_dir=session_dir,
+                        action_router=editor_router,
+                        request_approval=request_code_editor_approval,
+                    )
+                    break
+                except CandidateDisconnectedError:
+                    report("Candidate disconnected; waiting for reconnection")
+                    room = wait_for_candidate_connection(
+                        flocareer,
+                        session_dir=session_dir,
+                        timeout_seconds=candidate_wait_timeout_seconds,
+                        report=report,
+                        state_log_path=room.state_log_path,
+                        prior_state=room.final_state,
+                        prior_transitions=room.transitions,
+                        initial_state=InterviewRoomState.WAITING_FOR_CANDIDATE,
+                    )
+        result = replace(
+            result,
+            room_state_log_path=room.state_log_path,
+            code_editor_result=editor_result,
         )
         wait_for_manual_end(result.candidate_identifier)
         return result

@@ -384,10 +384,14 @@ def _join_live(
     *,
     candidate_name: str,
     login_timeout_seconds: float,
+    enable_code_editor_question: int | None,
+    candidate_wait_timeout_seconds: float | None,
 ) -> int:
     print("FloCareer approved live join")
     print("Safety mode: Launch and Join require separate approvals")
     print("Consent OK requires another approval when the form is shown")
+    if enable_code_editor_question is not None:
+        print("Code editor requires a separate candidate-and-question approval")
     print("Hang-up and FINISH are always blocked")
     health = run_health_checks(settings)
     if health.overall != "READY_FOR_BROWSER_SCAN":
@@ -431,6 +435,21 @@ def _join_live(
                 return
             print("Confirmation did not match; browser remains open.")
 
+    def request_code_editor_approval(
+        action: BrowserAction, candidate_identifier: str, question_id: int
+    ) -> str | None:
+        expected = approval_token_for(
+            action, candidate_identifier, question_id=question_id
+        )
+        print()
+        print(f"Approval required for {action.value}")
+        print(f"Type exactly: {expected}")
+        try:
+            return input("Approval token: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nApproval cancelled", file=sys.stderr)
+            return None
+
     try:
         result = join_candidate_live(
             settings,
@@ -439,6 +458,13 @@ def _join_live(
             progress=lambda message: print(message, flush=True),
             request_approval=request_approval,
             wait_for_manual_end=wait_for_manual_end,
+            enable_code_editor_question=enable_code_editor_question,
+            request_code_editor_approval=(
+                request_code_editor_approval
+                if enable_code_editor_question is not None
+                else None
+            ),
+            candidate_wait_timeout_seconds=candidate_wait_timeout_seconds,
         )
     except (BrowserScanError, JoinWorkflowError) as error:
         print(f"Live join failed: {error}", file=sys.stderr)
@@ -455,6 +481,16 @@ def _join_live(
         print("Consent form: not shown; FloCareer opened verified pre-call directly")
     print(f"Pre-call screenshot: {result.pre_call_screenshot}")
     print(f"Joined screenshot: {result.joined_screenshot}")
+    print(f"Room state log: {result.room_state_log_path}")
+    if result.code_editor_result is not None:
+        editor = result.code_editor_result
+        print(
+            "Code editor: "
+            f"{'enabled' if editor.changed else 'already visible'} "
+            f"for question {editor.question_id}"
+        )
+        print(f"Code editor before screenshot: {editor.before_screenshot}")
+        print(f"Code editor after screenshot: {editor.after_screenshot}")
     print(f"Action log: {result.action_log_path}")
     print("Validation passed: interview joined after all required approvals")
     return 0
@@ -603,6 +639,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=180.0,
         help="seconds to wait for manual login in the opened browser",
     )
+    join.add_argument(
+        "--candidate-wait-timeout",
+        type=_positive_seconds,
+        help="optional cutoff while waiting for the candidate after Join",
+    )
+    join.add_argument(
+        "--enable-code-editor-question",
+        type=int,
+        help="show this coding question's editor after the candidate connects",
+    )
     questions_scan = subcommands.add_parser(
         "questions-scan",
         help="launch with approval and read all questions without clicking Join",
@@ -660,15 +706,32 @@ def main(
         )
     if args.command == "join":
         if args.dry_run:
+            if (
+                args.enable_code_editor_question is not None
+                or args.candidate_wait_timeout is not None
+            ):
+                print(
+                    "candidate waiting and code-editor options require --live",
+                    file=sys.stderr,
+                )
+                return 2
             return _join_dry_run(
                 settings,
                 candidate_name=args.candidate,
                 login_timeout_seconds=args.login_timeout,
             )
+        if (
+            args.enable_code_editor_question is not None
+            and args.enable_code_editor_question < 1
+        ):
+            print("--enable-code-editor-question must be positive", file=sys.stderr)
+            return 2
         return _join_live(
             settings,
             candidate_name=args.candidate,
             login_timeout_seconds=args.login_timeout,
+            enable_code_editor_question=args.enable_code_editor_question,
+            candidate_wait_timeout_seconds=args.candidate_wait_timeout,
         )
     if args.command == "questions-scan":
         return _questions_scan(

@@ -92,9 +92,9 @@ health warning.
 | 2. Provider router and evaluator | Complete | LM Studio and OpenRouter return the same validated schema; JSON repair, strict retry, timeout, low-confidence routing, PII redaction, usage logging |
 | 3. Apple Speech system audio | Complete | Real macOS system audio captured as `system` / `Other`; microphone remained off; JSON and text persisted |
 | 4. Browser dashboard scan | Complete | Persistent manual login, delayed-auth protection, loading protection, card/table extraction, screenshot, no launch action |
-| 5. Launch and join interview | Implemented; live Join validation pending | Live Launch reached the verified pre-call page; `--live` handles optional consent with its own approval and always requires separate Join approval; hang-up and FINISH remain blocked |
+| 5. Launch, join, and candidate arrival | Implemented; watched validation pending | `--live` handles optional consent and separate Join approval, then records `LAUNCHED → INTERVIEWER_IN_ROOM → WAITING_FOR_CANDIDATE → CANDIDATE_CONNECTED` while keeping the browser open; hang-up and FINISH remain blocked |
 | 6. Question extraction | Implemented; watched revalidation pending | `questions-scan` reached 17 sequential cards; supplied `.clFESingleSugDet` HTML and automated coverage preserve multiline text; semantic coding detection and automatic read-only `code_editor_dom.json` capture have fixture coverage |
-| 7. Code editor automation | Guard/state workflow implemented; production click intentionally blocked | Exact question scoping, semantic tab navigation, SHOW/HIDE state reader, active-candidate plus candidate-and-question approval checks, stale-state revalidation, and fail-closed behavior have fixture coverage; real switch-parent HTML, selector binding, live-session integration, and watched validation remain pending |
+| 7. Code editor automation | Persistent-session integration implemented; watched validation pending | The verified card-scoped switch selector, exact question scoping, tab/state revalidation, and candidate-and-question approval are available only through `join --live --enable-code-editor-question`; language and code remain untouched |
 | 8. Offline session evaluation | Not started | Single-answer evaluator exists; session-level aggregation does not |
 | 9. LangGraph controller | Not started | Depends on browser, transcription, evaluator, timer seams |
 | 10. Feedback autofill | Not started | Must remain behind preview and approval gates |
@@ -215,11 +215,15 @@ Allowed now:
   single-use approvals in `--live` mode. If the verified Interviewer Consent
   Form appears, its scoped `OK` requires a third approval; otherwise no consent
   action is attempted.
+- After the exact candidate is connected in that same persistent session, show
+  one exact code editor only after its separate candidate-and-question-bound
+  approval. The workflow never changes language or editor code.
 - Save local screenshots, transcripts, and action/usage logs.
 
 Not implemented or not authorized by default:
 - Launch or Join without the matching stage approval.
-- Enable a code editor in a live interview.
+- Enable a code editor outside the guarded persistent `join --live` session,
+  without candidate connection, or without its exact question-bound approval.
 - Fill feedback fields.
 - Click hang-up.
 - Click FINISH.
@@ -1265,10 +1269,10 @@ For a coding question:
 
 1. Scroll to question card.
 2. Click `Code Editor` tab.
-3. Select language, usually `Python`.
-4. Check toggle text.
-5. If it says `SHOW CODE EDITOR TO CANDIDATE`, click it.
-6. Pass when it says `HIDE CODE EDITOR TO CANDIDATE`.
+3. Check toggle text without changing language or code.
+4. If it says `SHOW CODE EDITOR TO CANDIDATE`, click it only after the
+   candidate-and-question-bound approval.
+5. Pass when it says `HIDE CODE EDITOR TO CANDIDATE`.
 
 Meaning:
 
@@ -1280,15 +1284,16 @@ HIDE CODE EDITOR TO CANDIDATE -> currently visible, correct state
 ### Command
 
 ```bash
-uv run python main.py enable-code-editor --question 9 --language Python
+uv run python main.py join --candidate "Exact Candidate Name" --live \
+  --enable-code-editor-question 9
 ```
 
 ### Expected output
 
 ```text
+Candidate connected
 Question 9 found
 Code Editor tab opened
-Language set to Python
 Candidate visibility: enabled
 Screenshot saved
 ```
@@ -1296,7 +1301,6 @@ Screenshot saved
 ### Pass criteria
 
 - Code editor tab is active.
-- Language dropdown shows Python.
 - Toggle says `HIDE CODE EDITOR TO CANDIDATE`.
 - Candidate can see editor.
 

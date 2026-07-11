@@ -12,6 +12,7 @@ from typing import Protocol
 
 from browser.action_guard import BrowserAction
 from browser.action_router import ActionRouter
+from browser.code_editor_workflow import CodeEditorResult
 
 
 class JoinWorkflowError(RuntimeError):
@@ -61,6 +62,8 @@ class JoinLiveResult:
     pre_call_screenshot: Path
     joined_screenshot: Path
     action_log_path: Path
+    room_state_log_path: Path | None = None
+    code_editor_result: CodeEditorResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +86,12 @@ class LaunchWorkflowPage(Protocol):
 
 
 class JoinWorkflowPage(LaunchWorkflowPage, Protocol):
-    def bind_candidate_identifier(self, candidate_identifier: str) -> None: ...
+    def bind_candidate_identifier(
+        self,
+        candidate_identifier: str,
+        *,
+        candidate_name: str | None = None,
+    ) -> None: ...
 
     def wait_for_consent_form(self) -> None: ...
 
@@ -342,7 +350,7 @@ def run_join_live(
         diagnostic = page.capture_screenshot(screenshots_dir, "join_result_error")
         detail = str(error) or type(error).__name__
         raise JoinWorkflowError(f"{detail}. Screenshot: {diagnostic}") from error
-    page.bind_candidate_identifier(identifier)
+    page.bind_candidate_identifier(identifier, candidate_name=candidate_name)
     joined = page.capture_screenshot(screenshots_dir, "joined")
     return JoinLiveResult(
         candidate_identifier=identifier,

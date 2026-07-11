@@ -17,6 +17,10 @@ class CodeEditorWorkflowError(RuntimeError):
     """Raised when the requested editor action cannot be proven safe."""
 
 
+class CandidateDisconnectedError(CodeEditorWorkflowError):
+    """Raised when the candidate disconnects before the editor can be shown."""
+
+
 class CodeEditorVisibility(str, Enum):
     HIDDEN = "hidden"
     VISIBLE = "visible"
@@ -24,6 +28,8 @@ class CodeEditorVisibility(str, Enum):
 
 class CodeEditorPage(Protocol):
     def active_candidate_matches(self, candidate_identifier: str) -> bool: ...
+
+    def candidate_is_connected(self) -> bool: ...
 
     def capture_screenshot(self, directory: Path, name: str) -> Path: ...
 
@@ -113,6 +119,10 @@ def run_show_code_editor(
         f"{datetime.now(UTC).strftime('%Y%m%d_%H%M%S_%f')}"
     )
     _require_active_candidate(page, candidate_identifier)
+    if not page.candidate_is_connected():
+        raise CandidateDisconnectedError(
+            "Candidate is not connected; editor visibility was not changed"
+        )
     open_decision = action_router.route(
         BrowserAction.OPEN_CODE_EDITOR_TAB,
         operation=lambda: page.open_code_editor_tab(question_id),
@@ -146,6 +156,10 @@ def run_show_code_editor(
 
     # The operator pause can be long enough for another actor to change the state.
     _require_active_candidate(page, candidate_identifier)
+    if not page.candidate_is_connected():
+        raise CandidateDisconnectedError(
+            "Candidate disconnected while awaiting editor approval"
+        )
     visibility = page.read_code_editor_visibility(question_id)
     if visibility is CodeEditorVisibility.VISIBLE:
         return _unchanged_result(
@@ -160,6 +174,10 @@ def run_show_code_editor(
 
     def click_after_final_revalidation() -> None:
         _require_active_candidate(page, candidate_identifier)
+        if not page.candidate_is_connected():
+            raise CandidateDisconnectedError(
+                "Candidate disconnected before the editor could be shown"
+            )
         if not page.code_editor_tab_is_active(question_id):
             raise CodeEditorWorkflowError(
                 f"Code Editor tab for question {question_id} is no longer active"

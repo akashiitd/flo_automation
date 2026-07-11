@@ -38,7 +38,12 @@ class FakeJoinPage:
         self.events: list[str] = []
         self.candidate_identifier: str | None = None
 
-    def bind_candidate_identifier(self, candidate_identifier: str) -> None:
+    def bind_candidate_identifier(
+        self,
+        candidate_identifier: str,
+        *,
+        candidate_name: str | None = None,
+    ) -> None:
         self.candidate_identifier = candidate_identifier
         self.events.append("candidate_bound")
 

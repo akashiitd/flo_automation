@@ -8,6 +8,7 @@ import pytest
 from browser.action_guard import ActionGuard, BrowserAction, approval_token_for
 from browser.action_router import ActionRouter
 from browser.code_editor_workflow import (
+    CandidateDisconnectedError,
     CodeEditorVisibility,
     CodeEditorWorkflowError,
     run_show_code_editor,
@@ -28,9 +29,13 @@ class FakeCodeEditorPage:
         self.opened_questions: list[int] = []
         self.clicks: list[int] = []
         self.tab_active = True
+        self.candidate_connected = True
 
     def active_candidate_matches(self, candidate_identifier: str) -> bool:
         return self.candidate_identifier == candidate_identifier
+
+    def candidate_is_connected(self) -> bool:
+        return self.candidate_connected
 
     def capture_screenshot(self, directory: Path, name: str) -> Path:
         directory.mkdir(parents=True, exist_ok=True)
@@ -212,6 +217,32 @@ def test_active_editor_tab_is_revalidated_after_operator_approval_pause(
             session_dir=tmp_path,
             action_router=_router(tmp_path),
             request_approval=approve_after_tab_change,
+        )
+
+    assert page.clicks == []
+
+
+def test_candidate_disconnect_after_editor_approval_never_clicks_switch(
+    tmp_path: Path,
+) -> None:
+    page = FakeCodeEditorPage(CodeEditorVisibility.HIDDEN)
+
+    def approve_after_disconnect(
+        action: BrowserAction,
+        identifier: str,
+        question_id: int,
+    ) -> str:
+        page.candidate_connected = False
+        return approval_token_for(action, identifier, question_id=question_id)
+
+    with pytest.raises(CandidateDisconnectedError, match="disconnected"):
+        run_show_code_editor(
+            page,
+            candidate_identifier="candidate-a1b2c3",
+            question_id=13,
+            session_dir=tmp_path,
+            action_router=_router(tmp_path),
+            request_approval=approve_after_disconnect,
         )
 
     assert page.clicks == []

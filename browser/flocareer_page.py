@@ -31,6 +31,7 @@ from browser.question_workflow import (
     ExtractedQuestion,
     StructuralDomSnapshot,
 )
+from browser.room_workflow import InterviewRoomState
 from browser.screenshots import save_screenshot
 from browser.selectors import (
     ACTIVE_MENU_SELECTORS,
@@ -165,16 +166,25 @@ class FloCareerPage:
     ) -> None:
         self.page = page
         self._active_candidate_identifier: str | None = None
+        self._active_candidate_name: str | None = None
         self._candidate_cards: dict[CandidateCardHandle, Locator] = {}
         self._active_candidate_menu: Locator | None = None
         self._active_consent_dialog: Locator | None = None
         self._launch_source_page: Page | None = None
         self._pages_before_launch: tuple[Page, ...] = ()
 
-    def bind_candidate_identifier(self, candidate_identifier: str) -> None:
+    def bind_candidate_identifier(
+        self,
+        candidate_identifier: str,
+        *,
+        candidate_name: str | None = None,
+    ) -> None:
         if not candidate_identifier.strip():
             raise ValueError("candidate identifier is required")
+        if candidate_name is not None and not candidate_name.strip():
+            raise ValueError("candidate name must not be blank")
         self._active_candidate_identifier = candidate_identifier
+        self._active_candidate_name = candidate_name
 
     def active_candidate_matches(self, candidate_identifier: str) -> bool:
         return self._active_candidate_identifier == candidate_identifier
@@ -490,13 +500,74 @@ class FloCareerPage:
         if visible_joining_as and len(cls._visible_join_controls(page)) == 1:
             return InterviewPageState.PRE_CALL
 
-        joined_markers = page.locator(", ".join(JOINED_INTERVIEW_SELECTORS))
-        if not cls._visible_join_controls(page) and any(
-            joined_markers.nth(index).is_visible()
-            for index in range(joined_markers.count())
-        ):
+        if cls._is_interviewer_in_room(page):
             return InterviewPageState.JOINED
         return InterviewPageState.OTHER
+
+    @classmethod
+    def _is_interviewer_in_room(cls, page: Page) -> bool:
+        """Require multiple independent live-room signals, not one control."""
+
+        body_text = page.locator("body").inner_text(timeout=5_000)
+        joined_markers = page.locator(", ".join(JOINED_INTERVIEW_SELECTORS))
+        has_call_control = any(
+            joined_markers.nth(index).is_visible()
+            for index in range(joined_markers.count())
+        )
+        signals = (
+            cls._has_question_panel(page),
+            bool(re.search(r"^\s*REC\s*$", body_text, re.M)),
+            bool(re.search(r"\b\d{1,2}:\d{2}:\d{2}\b", body_text)),
+            has_call_control,
+            bool(re.search(r"^\s*Interview room\s*$", body_text, re.M | re.I)),
+        )
+        return sum(signals) >= 2 and not cls._visible_join_controls(page)
+
+    def read_interview_room_state(self) -> InterviewRoomState:
+        """Return the live candidate connection state after room entry."""
+
+        if not self._is_interviewer_in_room(self.page):
+            raise JoinWorkflowError("Interview room is no longer verified")
+        if self._active_candidate_name is None:
+            raise JoinWorkflowError(
+                "Active candidate name is not bound to this session"
+            )
+        candidate_names = self.page.get_by_text(self._active_candidate_name, exact=True)
+        visible_names = [
+            candidate_names.nth(index)
+            for index in range(candidate_names.count())
+            if candidate_names.nth(index).is_visible()
+        ]
+        if len(visible_names) != 1:
+            raise JoinWorkflowError(
+                "Expected one visible exact candidate name in the interview room; "
+                f"found {len(visible_names)}"
+            )
+        has_online_status = bool(
+            visible_names[0].evaluate(
+                """element => {
+                  const parent = element.parentElement;
+                  if (!parent) return false;
+                  const onlineSiblings = [...parent.children].filter(
+                    child => (child.innerText || '').trim().toUpperCase() === 'ONLINE'
+                  );
+                  return onlineSiblings.length === 1;
+                }"""
+            )
+        )
+        return (
+            InterviewRoomState.CANDIDATE_CONNECTED
+            if has_online_status
+            else InterviewRoomState.WAITING_FOR_CANDIDATE
+        )
+
+    def candidate_is_connected(self) -> bool:
+        return (
+            self.read_interview_room_state() is InterviewRoomState.CANDIDATE_CONNECTED
+        )
+
+    def wait_for_room_poll(self, seconds: float) -> None:
+        self.page.wait_for_timeout(seconds * 1_000)
 
     def wait_for_consent_or_pre_call(
         self, *, timeout_seconds: float = 30
@@ -1314,10 +1385,14 @@ class FloCareerPage:
             )
         visible[0].click()
 
-    def wait_for_joined_interview(self, *, timeout_seconds: float = 30) -> None:
-        deadline = time.monotonic() + timeout_seconds
+    def wait_for_joined_interview(
+        self, *, timeout_seconds: float | None = None
+    ) -> None:
+        deadline = (
+            time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+        )
         stable_polls = 0
-        while time.monotonic() < deadline:
+        while deadline is None or time.monotonic() < deadline:
             if self.page.is_closed():
                 raise JoinWorkflowError("Interview page closed after clicking Join")
             if self._page_state(self.page) is InterviewPageState.JOINED:
@@ -1327,6 +1402,4 @@ class FloCareerPage:
             else:
                 stable_polls = 0
             self.page.wait_for_timeout(250)
-        raise JoinWorkflowError(
-            "Timed out waiting for a stable interview room-ready marker"
-        )
+        raise JoinWorkflowError("Configured room-entry timeout elapsed")

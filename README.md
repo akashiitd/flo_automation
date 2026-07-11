@@ -24,10 +24,10 @@ The complete roadmap and safety constraints are documented in
 | Apple Speech system-audio capture | Implemented | `uv run python main.py listen-test --seconds 60` |
 | Read-only FloCareer dashboard scan | Implemented | `uv run python main.py browser-scan` |
 | Guarded candidate join discovery | Implemented and live-validated | `uv run python main.py join --candidate "Exact Name" --dry-run` |
-| Approved real Launch and Join | Implemented; live validation pending | `uv run python main.py join --candidate "Exact Name" --live` |
+| Approved real Launch, Join, and candidate wait | Implemented; live validation pending | `uv run python main.py join --candidate "Exact Name" --live` |
 | Approved normal-question extraction | Implemented; 17-card live scan completed, final multiline fix pending revalidation | `uv run python main.py questions-scan --candidate "Exact Name"` |
 | Coding-question detection and DOM capture | Implemented against semantic fixtures; watched revalidation pending | `uv run python main.py questions-scan --candidate "Exact Name"` |
-| Guarded code-editor visibility | Guard/state workflow implemented; production click blocked pending real switch DOM | — |
+| Guarded code-editor visibility | Integrated with the persistent live Join session; watched validation pending | `uv run python main.py join --candidate "Exact Name" --live --enable-code-editor-question 9` |
 | Feedback fill and final submit | Not implemented | — |
 
 ## Safety model
@@ -321,12 +321,21 @@ state. Ambiguous cards, labels, tabs, or semantic switch controls fail closed.
 The module does not guess an unlabelled visual control, use coordinates, select
 a language, type code, click hang-up, or click `FINISH`.
 
-This is fixture-validated only. `FloCareerPage` intentionally has no default
-switch selector and refuses the candidate-visible click until an automatic
-read-only capture establishes the real scoped control contract. It is not
-exposed as a standalone CLI command: the captured live DOM must be reviewed and
-converted into a code-owned selector, then integrated with the persistent Join
-session and watched once before live use.
+The verified card-scoped switch contract is
+`input[type="checkbox"][name^="codeSwitch-"]`; it is always scoped to the
+already-verified question card. Candidate-visible actions are available only
+inside the persistent `join --live` session, after the candidate is connected:
+
+```bash
+uv run python main.py join --candidate "Exact Candidate Name" --live \
+  --enable-code-editor-question 9
+```
+
+Launch, optional consent, Join, and showing the editor each require their own
+fresh approval. The live session records `LAUNCHED`, `INTERVIEWER_IN_ROOM`,
+`WAITING_FOR_CANDIDATE`, and `CANDIDATE_CONNECTED` transitions in
+`room_state_log.jsonl`. The workflow remains watched-validation only until it
+has passed against a future scheduled interview.
 
 ## Validation and development
 

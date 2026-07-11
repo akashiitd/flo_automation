@@ -9,6 +9,7 @@ from browser.code_editor_workflow import CodeEditorVisibility, CodeEditorWorkflo
 from browser.flocareer_page import FloCareerPage
 from browser.join_workflow import JoinWorkflowError, PostLaunchState
 from browser.question_workflow import ExtractedQuestion
+from browser.room_workflow import InterviewRoomState
 
 
 def test_dashboard_scan_extracts_rows_without_clicking_actions() -> None:
@@ -344,10 +345,86 @@ def test_join_button_disappearing_on_an_error_page_is_not_joined() -> None:
         page.set_content("<h1>Unable to join interview</h1>")
         flocareer = FloCareerPage(page)
 
-        with pytest.raises(JoinWorkflowError, match="room-ready marker"):
+        with pytest.raises(JoinWorkflowError, match="room-entry timeout"):
             flocareer.wait_for_joined_interview(timeout_seconds=0.05)
 
         browser.close()
+
+
+def test_room_state_detects_candidate_connected_from_independent_live_markers() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <h1>Interview room</h1><span>REC</span><span>01:17:26</span>
+            <button aria-label="Hang up">End</button>
+            <div><span>Candidate Alpha</span> <span>ONLINE</span></div>
+            <div>Candidate</div><div>Expert</div>
+            <section><span>1</span><button>Bookmark in Video</button>
+              <button>Mark as</button><div>YOUR RATING</div></section>
+            """
+        )
+
+        flocareer = FloCareerPage(page)
+        flocareer.bind_candidate_identifier(
+            "candidate-test", candidate_name="Candidate Alpha"
+        )
+        state = flocareer.read_interview_room_state()
+        browser.close()
+
+    assert state is InterviewRoomState.CANDIDATE_CONNECTED
+
+
+def test_room_state_waits_when_room_is_ready_without_candidate_markers() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <h1>Interview room</h1><span>REC</span><span>01:17:26</span>
+            <button aria-label="Hang up">End</button>
+            <div><span>Candidate Alpha</span></div>
+            <section><span>1</span><button>Bookmark in Video</button>
+              <button>Mark as</button><div>YOUR RATING</div></section>
+            """
+        )
+
+        flocareer = FloCareerPage(page)
+        flocareer.bind_candidate_identifier(
+            "candidate-test", candidate_name="Candidate Alpha"
+        )
+        state = flocareer.read_interview_room_state()
+        browser.close()
+
+    assert state is InterviewRoomState.WAITING_FOR_CANDIDATE
+
+
+def test_room_state_does_not_treat_another_online_participant_as_candidate() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <h1>Interview room</h1><span>REC</span><span>01:17:26</span>
+            <button aria-label="Hang up">End</button>
+            <section>
+              <div><span>Candidate Alpha</span> <span>OFFLINE</span></div>
+              <span>ONLINE</span><div>Other participant</div>
+            </section>
+            <section><span>1</span><button>Bookmark in Video</button>
+              <button>Mark as</button><div>YOUR RATING</div></section>
+            """
+        )
+        flocareer = FloCareerPage(page)
+        flocareer.bind_candidate_identifier(
+            "candidate-test", candidate_name="Candidate Alpha"
+        )
+
+        state = flocareer.read_interview_room_state()
+        browser.close()
+
+    assert state is InterviewRoomState.WAITING_FOR_CANDIDATE
 
 
 def test_join_click_revalidates_pre_call_after_operator_pause() -> None:
