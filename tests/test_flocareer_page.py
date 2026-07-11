@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 from playwright.sync_api import sync_playwright
 
@@ -469,6 +471,243 @@ def test_question_detection_requires_semantic_code_editor_tab() -> None:
 
         assert len(questions) == 1
         assert questions[0].has_code_editor is False
+        browser.close()
+
+
+def test_code_editor_dom_inspection_is_read_only_and_reports_unique_association() -> (
+    None
+):
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section id="container-normal-12" class="clMainSingleFESug">
+              <span class="question-number">12</span>
+              <button name="title">Explain generators.</button>
+              <button role="tab">Question</button>
+            </section>
+            <section id="container-normal-13" class="clMainSingleFESug">
+              <span class="question-number">13</span>
+              <button name="title">Implement an LRU cache.</button>
+              <button role="tab">Question</button>
+              <button role="tab" aria-selected="false"
+                onclick="window.editorTabClicked = true">Code Editor</button>
+              <div role="tabpanel">
+                <label class="editor-visibility-control">
+                  <input type="checkbox" role="switch"
+                    data-testid="candidate-editor-switch"
+                    class="MuiSwitch-input"
+                    value="private-candidate-value"
+                    onclick="window.editorSwitchClicked = true">
+                  <div class="clFloSwithTxt">SHOW CODE EDITOR TO CANDIDATE</div>
+                </label>
+              </div>
+            </section>
+            """
+        )
+
+        observations = FloCareerPage(page).inspect_code_editor_dom()
+
+        assert len(observations) == 1
+        observation = observations[0]
+        assert observation.question_id == 13
+        assert observation.question_id_source == "question-number-element"
+        assert observation.question_id_candidates == (13,)
+        assert observation.code_editor_tab_count == 1
+        assert observation.rendered_code_editor_tab_count == 1
+        assert observation.visibility_labels == ("SHOW CODE EDITOR TO CANDIDATE",)
+        assert observation.visibility_label_rendered == (True,)
+        assert observation.association_status == "unique"
+        assert len(observation.switch_candidates) == 1
+        assert observation.switch_candidates[0].tag_name == "input"
+        assert observation.switch_candidates[0].role == "switch"
+        assert observation.switch_candidates[0].test_id == ("candidate-editor-switch")
+        assert observation.switch_candidates[0].rendered is True
+        assert "editor-visibility-control" in (
+            observation.control_wrapper_outer_html.html
+            if observation.control_wrapper_outer_html
+            else ""
+        )
+        assert (
+            "container-normal-13" in observation.association_container_outer_html.html
+        )
+        assert (
+            "Implement an LRU cache"
+            not in observation.association_container_outer_html.html
+        )
+        assert "[redacted]" in observation.association_container_outer_html.html
+        assert (
+            "private-candidate-value"
+            not in observation.association_container_outer_html.html
+        )
+        assert (
+            observation.association_container_outer_html.sha256
+            == hashlib.sha256(
+                observation.association_container_outer_html.html.encode("utf-8")
+            ).hexdigest()
+        )
+        assert page.evaluate("Boolean(window.editorTabClicked)") is False
+        assert page.evaluate("Boolean(window.editorSwitchClicked)") is False
+        assert page.locator('[role="switch"]').is_checked() is False
+        browser.close()
+
+
+def test_code_editor_dom_inspection_reports_ambiguous_switch_candidates() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section class="clMainSingleFESug" data-question-id="7">
+              <button role="tab">Code Editor</button>
+              <label>
+                <input type="checkbox" role="switch">
+                <input type="checkbox" role="switch">
+                <div class="clFloSwithTxt">SHOW CODE EDITOR TO CANDIDATE</div>
+              </label>
+            </section>
+            """
+        )
+
+        observation = FloCareerPage(page).inspect_code_editor_dom()[0]
+
+        assert observation.question_id == 7
+        assert observation.association_status == "ambiguous"
+        assert len(observation.switch_candidates) == 2
+        assert not page.locator('[role="switch"]').nth(0).is_checked()
+        assert not page.locator('[role="switch"]').nth(1).is_checked()
+        browser.close()
+
+
+def test_code_editor_dom_inspection_captures_hidden_mounted_controls() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section class="clMainSingleFESug" data-question-id="9">
+              <button role="tab">Code Editor</button>
+              <div role="tabpanel" hidden>
+                <label>
+                  <input type="checkbox" role="switch">
+                  <div class="clFloSwithTxt">SHOW CODE EDITOR TO CANDIDATE</div>
+                </label>
+              </div>
+            </section>
+            """
+        )
+
+        observation = FloCareerPage(page).inspect_code_editor_dom()[0]
+
+        assert observation.association_status == "unique"
+        assert observation.visibility_label_rendered == (False,)
+        assert observation.switch_candidates[0].rendered is False
+        browser.close()
+
+
+def test_code_editor_dom_inspection_deduplicates_nested_question_roots() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section id="container-normal-4" class="clMainSingleFESug"
+              data-question-id="4">
+              <div data-testid="question-card">
+                <button role="tab">Code Editor</button>
+                <label><input type="checkbox" role="switch">
+                  <div class="clFloSwithTxt">SHOW CODE EDITOR TO CANDIDATE</div>
+                </label>
+              </div>
+            </section>
+            """
+        )
+
+        observations = FloCareerPage(page).inspect_code_editor_dom()
+
+        assert len(observations) == 1
+        assert observations[0].question_id == 4
+        browser.close()
+
+
+def test_code_editor_dom_inspection_keeps_separate_mixed_root_shapes() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section id="container-normal-4" class="clMainSingleFESug"
+              data-question-id="4">
+              <button role="tab">Code Editor</button>
+            </section>
+            <article class="question-card" data-question-id="8">
+              <button role="tab">Code Editor</button>
+            </article>
+            """
+        )
+
+        observations = FloCareerPage(page).inspect_code_editor_dom()
+
+        assert [observation.question_id for observation in observations] == [4, 8]
+        browser.close()
+
+
+def test_code_editor_dom_inspection_does_not_guess_from_unscoped_numbers() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section id="container-normal-dynamic" class="clMainSingleFESug">
+              <span>13</span><span>5</span>
+              <button role="tab">Code Editor</button>
+              <label><input type="checkbox" role="switch">
+                <div class="clFloSwithTxt">SHOW CODE EDITOR TO CANDIDATE</div>
+              </label>
+            </section>
+            """
+        )
+
+        observation = FloCareerPage(page).inspect_code_editor_dom()[0]
+
+        assert observation.question_id is None
+        assert observation.question_id_source == "unresolved"
+        assert observation.question_id_candidates == (5, 13)
+        assert observation.association_status == "ambiguous"
+        browser.close()
+
+
+def test_code_editor_dom_structural_snapshot_is_size_bounded() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section class="clMainSingleFESug" data-question-id="3">
+              <button role="tab">Code Editor</button>
+              <label><input type="checkbox" role="switch">
+                <div class="clFloSwithTxt">SHOW CODE EDITOR TO CANDIDATE</div>
+              </label>
+            </section>
+            """
+        )
+        page.locator(".clMainSingleFESug").evaluate(
+            "(element) => element.className += ' ' + 'x'.repeat(60000)"
+        )
+
+        observation = FloCareerPage(page).inspect_code_editor_dom()[0]
+
+        snapshot = observation.association_container_outer_html
+        assert snapshot.truncated is True
+        assert len(snapshot.html) == 50_000
+        assert len(snapshot.sha256) == 64
+        page.locator(".clMainSingleFESug").evaluate(
+            "(element) => element.className += 'different-after-prefix'"
+        )
+        changed = FloCareerPage(page).inspect_code_editor_dom()[0]
+        assert changed.association_container_outer_html.html == snapshot.html
+        assert changed.association_container_outer_html.sha256 != snapshot.sha256
         browser.close()
 
 

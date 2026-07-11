@@ -26,7 +26,7 @@ The complete roadmap and safety constraints are documented in
 | Guarded candidate join discovery | Implemented and live-validated | `uv run python main.py join --candidate "Exact Name" --dry-run` |
 | Approved real Launch and Join | Implemented; live validation pending | `uv run python main.py join --candidate "Exact Name" --live` |
 | Approved normal-question extraction | Implemented; 17-card live scan completed, final multiline fix pending revalidation | `uv run python main.py questions-scan --candidate "Exact Name"` |
-| Coding-question detection | Implemented against semantic coding-card fixture; watched revalidation pending | — |
+| Coding-question detection and DOM capture | Implemented against semantic fixtures; watched revalidation pending | `uv run python main.py questions-scan --candidate "Exact Name"` |
 | Guarded code-editor visibility | Guard/state workflow implemented; production click blocked pending real switch DOM | — |
 | Feedback fill and final submit | Not implemented | — |
 
@@ -269,18 +269,36 @@ saves their full text, ideal answers, rating guidelines, and locator hints.
 A watched run reached all 17 normal cards. Full multiline extraction now binds
 to FloCareer's supplied `.clFESingleSugDet` structure and has automated
 coverage; that final correction awaits the next watched revalidation.
-Coding-question detection awaits the real coding-card HTML fixture. The command
-never selects a language, opens or changes an editor, or enables `SHOW CODE
-EDITOR TO CANDIDATE`. It never clicks Join, feedback, ratings, `Mark as`,
-hang-up, or `FINISH`.
+Semantic coding-question detection and automatic read-only DOM capture have
+fixture coverage and await watched revalidation. The command never selects a
+language, opens or changes an editor, or enables `SHOW CODE EDITOR TO
+CANDIDATE`. It never clicks Join, feedback, ratings, `Mark as`, hang-up, or
+`FINISH`.
 
 Artifacts are saved under `runs/questions_scan_<timestamp>/`:
 
 ```text
 questions.json
+code_editor_dom.json
 screenshots/questions_expanded.png
 action_log.jsonl
 ```
+
+`code_editor_dom.json` is generated automatically and read-only. For every
+question exposing a semantic `Code Editor` tab, it records the question-number
+evidence, exact tab count, SHOW/HIDE labels, switch-like control candidates,
+their rendered state, the nearest control wrapper, and the encompassing card
+structure. Each observation is classified as `unique`, `none`, or `ambiguous`.
+Hidden-but-mounted controls are captured without opening the tab. Neither the
+tab nor any candidate control is clicked during discovery.
+
+Structural HTML is allowlist-redacted and capped at 50,000 characters per
+snapshot, with truncation and SHA-256 metadata. Unknown number layouts remain
+`unresolved` rather than being guessed. The file is written with owner-only
+permissions.
+
+This private diagnostic can contain interview content and DOM attributes. Keep
+it under ignored `runs/`; do not publish it or paste it into issues or chat.
 
 ### 10. Guarded code-editor visibility module
 
@@ -304,10 +322,11 @@ The module does not guess an unlabelled visual control, use coordinates, select
 a language, type code, click hang-up, or click `FINISH`.
 
 This is fixture-validated only. `FloCareerPage` intentionally has no default
-switch selector and refuses the candidate-visible click until the real scoped
-switch-parent `outerHTML` establishes that control contract. It is not exposed
-as a standalone CLI command: the real DOM binding, persistent Join-session
-integration, and a watched active interview are required before live use.
+switch selector and refuses the candidate-visible click until an automatic
+read-only capture establishes the real scoped control contract. It is not
+exposed as a standalone CLI command: the captured live DOM must be reviewed and
+converted into a code-owned selector, then integrated with the persistent Join
+session and watched once before live use.
 
 ## Validation and development
 

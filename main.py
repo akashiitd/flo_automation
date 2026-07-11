@@ -469,7 +469,7 @@ def _questions_scan(
     print("FloCareer approved question scan")
     print("Safety mode: Launch requires approval; Join is never clicked")
     print("Question cards may be expanded; evaluation controls are untouched")
-    print("Code editors are detected only and are never enabled for the candidate")
+    print("Code editor DOM is inspected only and is never enabled for the candidate")
     health = run_health_checks(settings)
     if health.overall != "READY_FOR_BROWSER_SCAN":
         print(health.render(), file=sys.stderr)
@@ -512,7 +512,28 @@ def _questions_scan(
     ]
     print(f"Extracted questions: {len(result.questions)}")
     print(f"Coding question IDs: {', '.join(coding) if coding else 'none detected'}")
+    associations = ", ".join(
+        (
+            f"{observation.question_id}={observation.association_status}"
+            if observation.question_id is not None
+            else "unresolved=ambiguous"
+        )
+        for observation in result.code_editor_dom_observations
+    )
+    observation_ids = [
+        observation.question_id
+        for observation in result.code_editor_dom_observations
+        if observation.question_id is not None
+    ]
+    capture_complete = len(observation_ids) == len(set(observation_ids)) and set(
+        observation_ids
+    ) == {int(question_id) for question_id in coding}
+    print(f"Code editor DOM associations: {associations or 'none detected'}")
+    print(
+        f"Code editor DOM capture: {'complete' if capture_complete else 'incomplete'}"
+    )
     print(f"Questions JSON: {result.questions_path}")
+    print(f"Code editor DOM: {result.code_editor_dom_path}")
     print(f"Expanded screenshot: {result.screenshot_path}")
     print(f"Action log: {result.action_log_path}")
     print("Validation passed: questions read without clicking Join")

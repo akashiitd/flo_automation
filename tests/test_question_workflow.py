@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 
 from browser.action_guard import ActionGuard, approval_token_for
 from browser.action_router import ActionRouter
 from browser.join_workflow import CandidateCardHandle, JoinCandidate, PostLaunchState
-from browser.question_workflow import ExtractedQuestion, run_question_scan
+from browser.question_workflow import (
+    CodeEditorControlObservation,
+    CodeEditorDomObservation,
+    ExtractedQuestion,
+    StructuralDomSnapshot,
+    run_question_scan,
+)
 
 
 class FakeQuestionPage:
@@ -16,6 +23,7 @@ class FakeQuestionPage:
         )
         self.launch_clicks = 0
         self.consent_clicks = 0
+        self.dom_inspections = 0
 
     def list_join_candidates(self) -> list[JoinCandidate]:
         return [self.candidate]
@@ -71,6 +79,59 @@ class FakeQuestionPage:
             ),
         ]
 
+    def inspect_code_editor_dom(self) -> list[CodeEditorDomObservation]:
+        self.dom_inspections += 1
+        control_html = StructuralDomSnapshot(
+            html='<input type="checkbox" role="switch">',
+            truncated=False,
+            sha256="control-hash",
+        )
+        wrapper_html = StructuralDomSnapshot(
+            html=(
+                '<label><input type="checkbox" role="switch">'
+                '<div class="clFloSwithTxt">SHOW CODE EDITOR TO CANDIDATE</div>'
+                "</label>"
+            ),
+            truncated=False,
+            sha256="wrapper-hash",
+        )
+        return [
+            CodeEditorDomObservation(
+                question_id=2,
+                question_id_source="question-number-element",
+                question_id_candidates=(2,),
+                code_editor_tab_count=1,
+                rendered_code_editor_tab_count=1,
+                visibility_labels=("SHOW CODE EDITOR TO CANDIDATE",),
+                visibility_label_rendered=(True,),
+                switch_candidates=(
+                    CodeEditorControlObservation(
+                        tag_name="input",
+                        role="switch",
+                        input_type="checkbox",
+                        aria_label=None,
+                        test_id="candidate-editor-switch",
+                        name=None,
+                        class_name="MuiSwitch-input",
+                        rendered=True,
+                        outer_html=control_html,
+                    ),
+                ),
+                association_status="unique",
+                question_number_outer_html=StructuralDomSnapshot(
+                    html="<span>2</span>",
+                    truncated=False,
+                    sha256="number-hash",
+                ),
+                control_wrapper_outer_html=wrapper_html,
+                association_container_outer_html=StructuralDomSnapshot(
+                    html='<section class="clMainSingleFESug">...</section>',
+                    truncated=False,
+                    sha256="card-hash",
+                ),
+            )
+        ]
+
 
 def test_question_scan_launches_but_never_joins_or_enables_editor(
     tmp_path: Path,
@@ -90,9 +151,17 @@ def test_question_scan_launches_but_never_joins_or_enables_editor(
 
     assert page.launch_clicks == 1
     assert page.consent_clicks == 0
+    assert page.dom_inspections == 1
     assert [question.id for question in result.questions] == [1, 2]
     assert result.questions[1].has_code_editor is True
     saved = json.loads(result.questions_path.read_text(encoding="utf-8"))
     assert saved[0]["question_text"] == "Explain model drift."
     assert saved[1]["has_code_editor"] is True
+    dom_capture = json.loads(result.code_editor_dom_path.read_text(encoding="utf-8"))
+    assert dom_capture["schema_version"] == 1
+    assert dom_capture["read_only"] is True
+    assert dom_capture["contains_private_interview_structure"] is True
+    assert dom_capture["observations"][0]["question_id"] == 2
+    assert dom_capture["observations"][0]["association_status"] == "unique"
+    assert stat.S_IMODE(result.code_editor_dom_path.stat().st_mode) == 0o600
     assert "CLICK_JOIN" not in router.log_path.read_text(encoding="utf-8")

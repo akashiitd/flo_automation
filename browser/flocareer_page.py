@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from playwright.sync_api import Locator, Page
 
@@ -22,7 +23,14 @@ from browser.join_workflow import (
     JoinWorkflowError,
     PostLaunchState,
 )
-from browser.question_workflow import ExtractedQuestion
+from browser.question_workflow import (
+    CodeEditorAssociationStatus,
+    CodeEditorControlObservation,
+    CodeEditorDomObservation,
+    CodeEditorQuestionIdSource,
+    ExtractedQuestion,
+    StructuralDomSnapshot,
+)
 from browser.screenshots import save_screenshot
 from browser.selectors import (
     ACTIVE_MENU_SELECTORS,
@@ -808,6 +816,337 @@ class FloCareerPage:
         snapshots = self._question_card_snapshots(self.page, expand=True)
         questions = [self._parse_question_snapshot(snapshot) for snapshot in snapshots]
         return sorted(questions, key=lambda question: question.id)
+
+    def inspect_code_editor_dom(self) -> list[CodeEditorDomObservation]:
+        """Read coding-card control structure without clicking or mutating it."""
+
+        raw_observations = self.page.evaluate(
+            r"""
+            async () => {
+              const MAX_HTML_LENGTH = 50000;
+              const sha256 = (value) => {
+                const rightRotate = (word, amount) =>
+                  (word >>> amount) | (word << (32 - amount));
+                const maxWord = 2 ** 32;
+                const bytes = new TextEncoder().encode(value);
+                let ascii = '';
+                bytes.forEach(byte => { ascii += String.fromCharCode(byte); });
+                const bitLength = ascii.length * 8;
+                const words = [];
+                const hash = [];
+                const constants = [];
+                const composites = {};
+                for (let candidate = 2; constants.length < 64; candidate += 1) {
+                  if (composites[candidate]) continue;
+                  for (let multiple = candidate; multiple < 313;
+                       multiple += candidate) composites[multiple] = true;
+                  hash.push((candidate ** 0.5 * maxWord) | 0);
+                  constants.push((candidate ** (1 / 3) * maxWord) | 0);
+                }
+                ascii += '\x80';
+                while (ascii.length % 64 !== 56) ascii += '\x00';
+                for (let index = 0; index < ascii.length; index += 1) {
+                  words[index >> 2] |= ascii.charCodeAt(index)
+                    << ((3 - index) % 4) * 8;
+                }
+                words.push((bitLength / maxWord) | 0, bitLength);
+                let state = hash.slice(0, 8);
+                for (let offset = 0; offset < words.length; offset += 16) {
+                  const schedule = words.slice(offset, offset + 16);
+                  const previous = state.slice();
+                  for (let round = 0; round < 64; round += 1) {
+                    const w15 = schedule[round - 15];
+                    const w2 = schedule[round - 2];
+                    schedule[round] = round < 16 ? schedule[round] : (
+                      schedule[round - 16]
+                      + (rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15 >>> 3))
+                      + schedule[round - 7]
+                      + (rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2 >>> 10))
+                    ) | 0;
+                    const a = state[0];
+                    const e = state[4];
+                    const temporary1 = state[7]
+                      + (rightRotate(e, 6) ^ rightRotate(e, 11)
+                         ^ rightRotate(e, 25))
+                      + ((e & state[5]) ^ ((~e) & state[6]))
+                      + constants[round] + schedule[round];
+                    const temporary2 = (rightRotate(a, 2) ^ rightRotate(a, 13)
+                      ^ rightRotate(a, 22))
+                      + ((a & state[1]) ^ (a & state[2])
+                         ^ (state[1] & state[2]));
+                    state = [(temporary1 + temporary2) | 0].concat(state);
+                    state[4] = (state[4] + temporary1) | 0;
+                    state.pop();
+                  }
+                  state = state.map((word, index) =>
+                    (word + previous[index]) | 0
+                  );
+                }
+                return state.map(word => [...Array(4)].map((_, index) => {
+                  const byte = (word >>> ((3 - index) * 8)) & 255;
+                  return byte.toString(16).padStart(2, '0');
+                }).join('')).join('');
+              };
+              const rendered = (element) => {
+                if (!element.isConnected) return false;
+                let node = element;
+                while (node && node !== document.documentElement) {
+                  if (node.hasAttribute('hidden') || node.hasAttribute('inert')
+                      || node.getAttribute('aria-hidden') === 'true') return false;
+                  const style = getComputedStyle(node);
+                  if (style.display === 'none' || style.visibility === 'hidden') {
+                    return false;
+                  }
+                  node = node.parentElement;
+                }
+                const rect = element.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+              };
+              const text = (element) => (element.textContent || '').trim();
+              const snapshot = async (element) => {
+                if (!element) return null;
+                const clone = element.cloneNode(true);
+                clone.querySelectorAll('script, style').forEach(node => node.remove());
+                [clone, ...clone.querySelectorAll('*')].forEach(node => {
+                  [...node.attributes].forEach(attribute => {
+                    const allowed = [
+                      'class', 'role', 'type', 'aria-label', 'aria-selected',
+                      'aria-hidden', 'data-testid', 'data-question-id',
+                      'data-question-number', 'name', 'for', 'hidden', 'inert',
+                      'checked', 'disabled'
+                    ].includes(attribute.name)
+                      || (attribute.name === 'id'
+                          && attribute.value.startsWith('container-'));
+                    if (!allowed) node.removeAttribute(attribute.name);
+                  });
+                  [...node.childNodes].forEach(child => {
+                    if (child.nodeType !== 3) return;
+                    const value = (child.textContent || '').trim();
+                    if (!value) return;
+                    const keep = /^\d{1,3}$/.test(value)
+                      || ['Question', 'Code Editor',
+                          'SHOW CODE EDITOR TO CANDIDATE',
+                          'HIDE CODE EDITOR TO CANDIDATE'].includes(value);
+                    if (!keep) child.textContent = '[redacted]';
+                  });
+                });
+                const html = clone.outerHTML;
+                return {
+                  html: html.slice(0, MAX_HTML_LENGTH),
+                  truncated: html.length > MAX_HTML_LENGTH,
+                  sha256: sha256(html),
+                };
+              };
+              const preferredRoots = [...document.querySelectorAll(
+                '.clMainSingleFESug[id^="container-"]'
+              )];
+              const normalizedPreferred = preferredRoots.filter(root =>
+                !preferredRoots.some(other => other !== root && other.contains(root))
+              );
+              const fallbackCandidates = [...document.querySelectorAll(
+                '[data-question-id], [data-testid="question-card"], .question-card'
+              )].filter(root => !normalizedPreferred.some(preferred =>
+                preferred.contains(root) || root.contains(preferred)
+              ));
+              const normalizedFallback = fallbackCandidates.filter(root =>
+                !fallbackCandidates.some(other =>
+                  other !== root && other.contains(root)
+                )
+              );
+              const roots = [...normalizedPreferred, ...normalizedFallback];
+              const describeControl = async (control) => ({
+                tag_name: control.tagName.toLowerCase(),
+                role: control.getAttribute('role'),
+                input_type: control.getAttribute('type'),
+                aria_label: control.getAttribute('aria-label'),
+                test_id: control.getAttribute('data-testid'),
+                name: control.getAttribute('name'),
+                class_name: control.getAttribute('class'),
+                rendered: rendered(control),
+                outer_html: await snapshot(control),
+              });
+              const switchControls = (container) => [...container.querySelectorAll(
+                '[role="switch"], input[type="checkbox"]'
+              )];
+
+              const observations = [];
+              for (const root of roots) {
+                const tabs = [...root.querySelectorAll('[role="tab"]')]
+                  .filter(tab => text(tab) === 'Code Editor');
+                if (tabs.length === 0) continue;
+
+                const explicitNumbers = [...root.querySelectorAll(
+                  '[data-question-number], .question-number'
+                )].filter(node => /^\d{1,3}$/.test(text(node)));
+                const numericCandidates = [...new Set(
+                  [...root.querySelectorAll('*')]
+                    .map(node => text(node))
+                    .filter(value => /^\d{1,3}$/.test(value))
+                    .map(Number)
+                )].sort((left, right) => left - right);
+                const dataQuestionId = root.getAttribute('data-question-id');
+                let questionId = null;
+                let questionIdSource = 'unresolved';
+                let number = explicitNumbers.length === 1
+                  ? explicitNumbers[0] : null;
+                if (dataQuestionId && /^\d{1,3}$/.test(dataQuestionId)) {
+                  questionId = Number(dataQuestionId);
+                  questionIdSource = 'data-question-id';
+                } else if (number) {
+                  questionId = Number(text(number));
+                  questionIdSource = 'question-number-element';
+                }
+
+                const labels = [...root.querySelectorAll('.clFloSwithTxt')];
+                let wrapper = null;
+                let controls = [];
+                if (labels.length === 1) {
+                  let node = labels[0].parentElement;
+                  while (node && root.contains(node)) {
+                    const candidates = switchControls(node);
+                    if (candidates.length > 0) {
+                      wrapper = node;
+                      controls = candidates;
+                      break;
+                    }
+                    if (node === root) break;
+                    node = node.parentElement;
+                  }
+                }
+
+                const recognizedLabels = labels.map(text);
+                const labelIsKnown = recognizedLabels.length === 1
+                  && ['SHOW CODE EDITOR TO CANDIDATE',
+                      'HIDE CODE EDITOR TO CANDIDATE'].includes(recognizedLabels[0]);
+                let status = 'ambiguous';
+                if (questionId === null || tabs.length !== 1 || labels.length > 1) {
+                  status = 'ambiguous';
+                } else if (labels.length === 0 || controls.length === 0) {
+                  status = 'none';
+                } else if (labelIsKnown && controls.length === 1) {
+                  status = 'unique';
+                }
+
+                observations.push({
+                  question_id: questionId,
+                  question_id_source: questionIdSource,
+                  question_id_candidates: numericCandidates,
+                  code_editor_tab_count: tabs.length,
+                  rendered_code_editor_tab_count: tabs.filter(rendered).length,
+                  visibility_labels: recognizedLabels,
+                  visibility_label_rendered: labels.map(rendered),
+                  switch_candidates: await Promise.all(
+                    controls.map(describeControl)
+                  ),
+                  association_status: status,
+                  question_number_outer_html: await snapshot(number),
+                  control_wrapper_outer_html: await snapshot(wrapper),
+                  association_container_outer_html: await snapshot(root),
+                });
+              }
+              return observations;
+            }
+            """
+        )
+
+        def structural_snapshot(raw: object) -> StructuralDomSnapshot | None:
+            if not isinstance(raw, dict):
+                return None
+            html = str(raw.get("html") or "")
+            return StructuralDomSnapshot(
+                html=html,
+                truncated=bool(raw.get("truncated")),
+                sha256=str(raw.get("sha256") or ""),
+            )
+
+        observations: list[CodeEditorDomObservation] = []
+        for raw in raw_observations:
+            controls = tuple(
+                CodeEditorControlObservation(
+                    tag_name=str(control.get("tag_name") or ""),
+                    role=(str(control["role"]) if control.get("role") else None),
+                    input_type=(
+                        str(control["input_type"])
+                        if control.get("input_type")
+                        else None
+                    ),
+                    aria_label=(
+                        str(control["aria_label"])
+                        if control.get("aria_label")
+                        else None
+                    ),
+                    test_id=(
+                        str(control["test_id"]) if control.get("test_id") else None
+                    ),
+                    name=(str(control["name"]) if control.get("name") else None),
+                    class_name=(
+                        str(control["class_name"])
+                        if control.get("class_name")
+                        else None
+                    ),
+                    rendered=bool(control.get("rendered")),
+                    outer_html=structural_snapshot(control.get("outer_html"))
+                    or StructuralDomSnapshot(
+                        html="",
+                        truncated=False,
+                        sha256=hashlib.sha256(b"").hexdigest(),
+                    ),
+                )
+                for control in raw.get("switch_candidates", [])
+            )
+            status = str(raw.get("association_status") or "ambiguous")
+            if status not in {"unique", "none", "ambiguous"}:
+                status = "ambiguous"
+            observations.append(
+                CodeEditorDomObservation(
+                    question_id=(
+                        int(raw["question_id"])
+                        if raw.get("question_id") is not None
+                        else None
+                    ),
+                    question_id_source=cast(
+                        CodeEditorQuestionIdSource,
+                        str(raw.get("question_id_source") or "unresolved"),
+                    ),
+                    question_id_candidates=tuple(
+                        int(value) for value in raw.get("question_id_candidates", [])
+                    ),
+                    code_editor_tab_count=int(raw.get("code_editor_tab_count") or 0),
+                    rendered_code_editor_tab_count=int(
+                        raw.get("rendered_code_editor_tab_count") or 0
+                    ),
+                    visibility_labels=tuple(
+                        str(label) for label in raw.get("visibility_labels", [])
+                    ),
+                    visibility_label_rendered=tuple(
+                        bool(value)
+                        for value in raw.get("visibility_label_rendered", [])
+                    ),
+                    switch_candidates=controls,
+                    association_status=cast(CodeEditorAssociationStatus, status),
+                    question_number_outer_html=structural_snapshot(
+                        raw.get("question_number_outer_html")
+                    ),
+                    control_wrapper_outer_html=structural_snapshot(
+                        raw.get("control_wrapper_outer_html")
+                    ),
+                    association_container_outer_html=structural_snapshot(
+                        raw.get("association_container_outer_html")
+                    )
+                    or StructuralDomSnapshot(
+                        html="",
+                        truncated=False,
+                        sha256=hashlib.sha256(b"").hexdigest(),
+                    ),
+                )
+            )
+        return sorted(
+            observations,
+            key=lambda observation: (
+                observation.question_id is None,
+                observation.question_id or 0,
+            ),
+        )
 
     def _question_root(self, question_id: int) -> Locator:
         if question_id < 1:

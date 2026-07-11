@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from browser.action_guard import BrowserAction
 from browser.action_router import ActionRouter
@@ -31,11 +31,57 @@ class ExtractedQuestion:
     mark_as_locator_hint: str
 
 
+CodeEditorAssociationStatus = Literal["unique", "none", "ambiguous"]
+CodeEditorQuestionIdSource = Literal[
+    "data-question-id",
+    "question-number-element",
+    "unresolved",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class StructuralDomSnapshot:
+    html: str
+    truncated: bool
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class CodeEditorControlObservation:
+    tag_name: str
+    role: str | None
+    input_type: str | None
+    aria_label: str | None
+    test_id: str | None
+    name: str | None
+    class_name: str | None
+    rendered: bool
+    outer_html: StructuralDomSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class CodeEditorDomObservation:
+    question_id: int | None
+    question_id_source: CodeEditorQuestionIdSource
+    question_id_candidates: tuple[int, ...]
+    code_editor_tab_count: int
+    rendered_code_editor_tab_count: int
+    visibility_labels: tuple[str, ...]
+    visibility_label_rendered: tuple[bool, ...]
+    switch_candidates: tuple[CodeEditorControlObservation, ...]
+    association_status: CodeEditorAssociationStatus
+    question_number_outer_html: StructuralDomSnapshot | None
+    control_wrapper_outer_html: StructuralDomSnapshot | None
+    association_container_outer_html: StructuralDomSnapshot
+
+
 @dataclass(frozen=True, slots=True)
 class QuestionScanResult:
     candidate_identifier: str
     questions: tuple[ExtractedQuestion, ...]
     questions_path: Path
+    code_editor_dom_observations: tuple[CodeEditorDomObservation, ...]
+    code_editor_dom_path: Path
     screenshot_path: Path
     action_log_path: Path
 
@@ -46,6 +92,7 @@ class QuestionScanPage(LaunchWorkflowPage, Protocol):
     def click_consent_ok(self) -> None: ...
     def wait_for_question_panel(self) -> None: ...
     def extract_questions(self) -> list[ExtractedQuestion]: ...
+    def inspect_code_editor_dom(self) -> list[CodeEditorDomObservation]: ...
 
 
 def _write_questions(path: Path, questions: tuple[ExtractedQuestion, ...]) -> None:
@@ -56,6 +103,38 @@ def _write_questions(path: Path, questions: tuple[ExtractedQuestion, ...]) -> No
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def _write_code_editor_dom(
+    path: Path,
+    *,
+    coding_question_ids: tuple[int, ...],
+    observations: tuple[CodeEditorDomObservation, ...],
+) -> None:
+    observation_ids = tuple(
+        observation.question_id
+        for observation in observations
+        if observation.question_id is not None
+    )
+    payload = {
+        "schema_version": 1,
+        "read_only": True,
+        "contains_private_interview_structure": True,
+        "detected_coding_question_ids": coding_question_ids,
+        "observation_ids": observation_ids,
+        "complete": (
+            len(observation_ids) == len(set(observation_ids))
+            and set(observation_ids) == set(coding_question_ids)
+        ),
+        "observations": [asdict(observation) for observation in observations],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.touch(mode=0o600, exist_ok=True)
+    temporary.chmod(0o600)
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    path.chmod(0o600)
 
 
 def run_question_scan(
@@ -132,13 +211,33 @@ def run_question_scan(
             "Question extraction returned duplicate IDs or empty text"
         )
 
+    try:
+        code_editor_dom_observations = tuple(page.inspect_code_editor_dom())
+    except Exception as error:
+        diagnostic = page.capture_screenshot(
+            screenshots_dir, "code_editor_dom_inspection_error"
+        )
+        detail = str(error) or type(error).__name__
+        raise JoinWorkflowError(f"{detail}. Screenshot: {diagnostic}") from error
+
     screenshot = page.capture_screenshot(screenshots_dir, "questions_expanded")
     questions_path = session_dir / "questions.json"
     _write_questions(questions_path, questions)
+    coding_question_ids = tuple(
+        question.id for question in questions if question.has_code_editor
+    )
+    code_editor_dom_path = session_dir / "code_editor_dom.json"
+    _write_code_editor_dom(
+        code_editor_dom_path,
+        coding_question_ids=coding_question_ids,
+        observations=code_editor_dom_observations,
+    )
     return QuestionScanResult(
         candidate_identifier=identifier,
         questions=questions,
         questions_path=questions_path,
+        code_editor_dom_observations=code_editor_dom_observations,
+        code_editor_dom_path=code_editor_dom_path,
         screenshot_path=screenshot,
         action_log_path=action_router.log_path,
     )

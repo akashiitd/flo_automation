@@ -26,7 +26,11 @@ def test_questions_scan_reports_coding_questions_without_join(
             SimpleNamespace(id=1, has_code_editor=False),
             SimpleNamespace(id=2, has_code_editor=True),
         ),
+        code_editor_dom_observations=(
+            SimpleNamespace(question_id=2, association_status="unique"),
+        ),
         questions_path=session / "questions.json",
+        code_editor_dom_path=session / "code_editor_dom.json",
         screenshot_path=session / "screenshots" / "questions_expanded.png",
         action_log_path=session / "action_log.jsonl",
     )
@@ -52,6 +56,9 @@ def test_questions_scan_reports_coding_questions_without_join(
     output = capsys.readouterr().out
     assert "Extracted questions: 2" in output
     assert "Coding question IDs: 2" in output
+    assert "Code editor DOM associations: 2=unique" in output
+    assert "Code editor DOM capture: complete" in output
+    assert "Code editor DOM: " in output
     assert "without clicking Join" in output
 
 
