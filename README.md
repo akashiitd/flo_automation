@@ -5,8 +5,9 @@ project combines read-only browser scanning, Apple Speech system-audio
 transcription, structured LLM evaluation, guarded cloud fallback, and
 per-session audit files.
 
-The copilot is intentionally human-controlled. The implemented version does
-not launch interviews, click hang-up, fill feedback, or submit `FINISH`.
+The copilot is intentionally human-controlled. Launch is available only after
+an exact candidate-bound approval. The implementation never clicks hang-up,
+fills feedback, changes ratings, or submits `FINISH`.
 
 The complete roadmap and safety constraints are documented in
 [`FLOCAREER_AUTOMATION_PLAN.md`](FLOCAREER_AUTOMATION_PLAN.md).
@@ -24,7 +25,9 @@ The complete roadmap and safety constraints are documented in
 | Read-only FloCareer dashboard scan | Implemented | `uv run python main.py browser-scan` |
 | Guarded candidate join discovery | Implemented and live-validated | `uv run python main.py join --candidate "Exact Name" --dry-run` |
 | Approved real Launch and Join | Implemented; live validation pending | `uv run python main.py join --candidate "Exact Name" --live` |
-| Question extraction, feedback fill, final submit | Not implemented | — |
+| Approved normal-question extraction | Implemented; 17-card live scan completed, final multiline fix pending revalidation | `uv run python main.py questions-scan --candidate "Exact Name"` |
+| Coding-question detection | Pending real coding-card HTML fixture | — |
+| Feedback fill and final submit | Not implemented | — |
 
 ## Safety model
 
@@ -248,6 +251,33 @@ screenshots/launch_approval.png
 screenshots/consent.png
 screenshots/pre_call.png
 screenshots/joined.png
+action_log.jsonl
+```
+
+### 9. Read and expand questions without joining
+
+Run this while watching the browser:
+
+```bash
+uv run python main.py questions-scan --candidate "Exact Candidate Name"
+```
+
+The command requires the candidate-bound Launch approval and, only when shown,
+a separate Consent OK approval. It then expands visible question cards and
+saves their full text, ideal answers, rating guidelines, and locator hints.
+A watched run reached all 17 normal cards. Full multiline extraction now binds
+to FloCareer's supplied `.clFESingleSugDet` structure and has automated
+coverage; that final correction awaits the next watched revalidation.
+Coding-question detection awaits the real coding-card HTML fixture. The command
+never selects a language, opens or changes an editor, or enables `SHOW CODE
+EDITOR TO CANDIDATE`. It never clicks Join, feedback, ratings, `Mark as`,
+hang-up, or `FINISH`.
+
+Artifacts are saved under `runs/questions_scan_<timestamp>/`:
+
+```text
+questions.json
+screenshots/questions_expanded.png
 action_log.jsonl
 ```
 

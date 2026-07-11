@@ -5,6 +5,7 @@ from playwright.sync_api import sync_playwright
 
 from browser.flocareer_page import FloCareerPage
 from browser.join_workflow import JoinWorkflowError, PostLaunchState
+from browser.question_workflow import ExtractedQuestion
 
 
 def test_dashboard_scan_extracts_rows_without_clicking_actions() -> None:
@@ -378,4 +379,68 @@ def test_join_click_revalidates_pre_call_after_operator_pause() -> None:
         with pytest.raises(JoinWorkflowError, match="no longer verified"):
             flocareer.click_join()
 
+
+def test_extract_questions_expands_text_and_only_detects_code_editor() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section id="container-normal-1" class="clMainSingleFESug"
+              style="width:700px; min-height:220px"><span>1</span>
+              <button name="title" onclick="this.nextElementSibling.hidden=false">
+                Explain model drift affecting a production LLM...
+              </button>
+              <div class="MuiCollapse-root" hidden>
+                <div class="clFESingleSugDet">
+                  <p>Explain model drift affecting a production LLM.</p>
+                  <p>Include monitoring, diagnosis, and remediation steps.</p>
+                </div>
+                <div>====================</div>
+                <div>Ideal Answer (5 Star)</div><p>Monitor, diagnose, and roll back.</p>
+                <div>Guidelines for 4 star rating</div><p>Misses one detail.</p>
+              </div>
+              <button>Bookmark in Video</button><button>Mark as</button>
+              <textarea placeholder="Feedback *"></textarea><div>YOUR RATING</div>
+            </section>
+            <section id="container-normal-2" class="clMainSingleFESug"
+              style="width:700px; min-height:220px"><span>2</span>
+              <button name="title">Implement an LRU cache.</button>
+              <div role="tab">Question</div><div role="tab">Code Editor</div>
+              <label><input type="checkbox">SHOW CODE EDITOR TO CANDIDATE</label>
+              <button>Bookmark in Video</button><button>Mark as</button>
+              <textarea placeholder="Feedback *"></textarea><div>YOUR RATING</div>
+            </section>
+            """
+        )
+        flocareer = FloCareerPage(page)
+
+        questions = flocareer.extract_questions()
+
+        assert questions == [
+            ExtractedQuestion(
+                id=1,
+                question_text=(
+                    "Explain model drift affecting a production LLM.\n"
+                    "Include monitoring, diagnosis, and remediation steps."
+                ),
+                has_code_editor=False,
+                ideal_answer="Monitor, diagnose, and roll back.",
+                guidelines={"4_star": "Misses one detail."},
+                feedback_field_locator_hint="question:1:feedback",
+                rating_locator_hint="question:1:rating",
+                mark_as_locator_hint="question:1:mark_as",
+            ),
+            ExtractedQuestion(
+                id=2,
+                question_text="Implement an LRU cache.",
+                has_code_editor=True,
+                ideal_answer="",
+                guidelines={},
+                feedback_field_locator_hint="question:2:feedback",
+                rating_locator_hint="question:2:rating",
+                mark_as_locator_hint="question:2:mark_as",
+            ),
+        ]
+        assert page.locator('input[type="checkbox"]').is_checked() is False
         browser.close()

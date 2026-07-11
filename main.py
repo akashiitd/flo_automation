@@ -24,6 +24,7 @@ from browser.playwright_controller import (
     BrowserScanError,
     join_candidate_dry_run,
     join_candidate_live,
+    scan_candidate_questions,
     scan_dashboard,
 )
 from evaluator.scoring import evaluate_answer
@@ -459,6 +460,65 @@ def _join_live(
     return 0
 
 
+def _questions_scan(
+    settings: Settings,
+    *,
+    candidate_name: str,
+    login_timeout_seconds: float,
+) -> int:
+    print("FloCareer approved question scan")
+    print("Safety mode: Launch requires approval; Join is never clicked")
+    print("Question cards may be expanded; evaluation controls are untouched")
+    print("Code editors are detected only and are never enabled for the candidate")
+    health = run_health_checks(settings)
+    if health.overall != "READY_FOR_BROWSER_SCAN":
+        print(health.render(), file=sys.stderr)
+        print(
+            "Question scan failed: health prerequisites are not ready", file=sys.stderr
+        )
+        return 1
+
+    def request_approval(
+        action: BrowserAction, candidate_identifier: str
+    ) -> str | None:
+        expected = approval_token_for(action, candidate_identifier)
+        print()
+        print(f"Approval required for {action.value}")
+        print(f"Type exactly: {expected}")
+        try:
+            return input("Approval token: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nApproval cancelled", file=sys.stderr)
+            return None
+
+    try:
+        result = scan_candidate_questions(
+            settings,
+            candidate_name=candidate_name,
+            request_approval=request_approval,
+            login_timeout_seconds=login_timeout_seconds,
+            progress=lambda message: print(message, flush=True),
+        )
+    except (BrowserScanError, JoinWorkflowError) as error:
+        print(f"Question scan failed: {error}", file=sys.stderr)
+        return 1
+    except Exception as error:
+        detail = str(error) or type(error).__name__
+        print(f"Question scan failed: {detail}", file=sys.stderr)
+        return 1
+
+    coding = [
+        str(question.id) for question in result.questions if question.has_code_editor
+    ]
+    print(f"Extracted questions: {len(result.questions)}")
+    print(f"Coding question IDs: {', '.join(coding) if coding else 'none detected'}")
+    print(f"Questions JSON: {result.questions_path}")
+    print(f"Expanded screenshot: {result.screenshot_path}")
+    print(f"Action log: {result.action_log_path}")
+    print("Validation passed: questions read without clicking Join")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Supervised FloCareer interview automation copilot"
@@ -522,6 +582,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=180.0,
         help="seconds to wait for manual login in the opened browser",
     )
+    questions_scan = subcommands.add_parser(
+        "questions-scan",
+        help="launch with approval and read all questions without clicking Join",
+    )
+    questions_scan.add_argument(
+        "--candidate", required=True, help="exact visible candidate name"
+    )
+    questions_scan.add_argument(
+        "--login-timeout",
+        type=_positive_seconds,
+        default=180.0,
+        help="seconds to wait for manual login in the opened browser",
+    )
     return parser
 
 
@@ -572,6 +645,12 @@ def main(
                 login_timeout_seconds=args.login_timeout,
             )
         return _join_live(
+            settings,
+            candidate_name=args.candidate,
+            login_timeout_seconds=args.login_timeout,
+        )
+    if args.command == "questions-scan":
+        return _questions_scan(
             settings,
             candidate_name=args.candidate,
             login_timeout_seconds=args.login_timeout,

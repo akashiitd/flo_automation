@@ -23,6 +23,7 @@ from browser.join_workflow import (
     run_join_dry_run,
     run_join_live,
 )
+from browser.question_workflow import QuestionScanResult, run_question_scan
 from browser.screenshots import save_screenshot
 
 
@@ -230,3 +231,42 @@ def join_candidate_live(
         )
         wait_for_manual_end(result.candidate_identifier)
         return result
+
+
+def scan_candidate_questions(
+    settings: Settings,
+    *,
+    candidate_name: str,
+    request_approval: ApprovalRequester,
+    login_timeout_seconds: float = 180,
+    progress: Callable[[str], None] | None = None,
+) -> QuestionScanResult:
+    """Launch one interview page and extract questions without clicking Join."""
+
+    report = progress or (lambda message: None)
+    session_id = f"questions_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    session_dir = settings.runs_dir / session_id
+    screenshots_dir = session_dir / "screenshots"
+    router = ActionRouter(ActionGuard.live_join(), session_dir / "action_log.jsonl")
+
+    with _persistent_flocareer_page(settings) as flocareer:
+        report(f"Opening {settings.flocareer_url}")
+        router.route(
+            BrowserAction.OPEN_DASHBOARD,
+            operation=lambda: flocareer.open_dashboard(settings.flocareer_url),
+        )
+        _wait_for_authenticated_dashboard(
+            settings,
+            flocareer,
+            screenshots_dir=screenshots_dir,
+            login_timeout_seconds=login_timeout_seconds,
+            report=report,
+        )
+        flocareer.page.wait_for_timeout(500)
+        return run_question_scan(
+            flocareer,
+            candidate_name=candidate_name,
+            session_dir=session_dir,
+            action_router=router,
+            request_approval=request_approval,
+        )

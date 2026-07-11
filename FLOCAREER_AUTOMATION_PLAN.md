@@ -93,8 +93,8 @@ health warning.
 | 3. Apple Speech system audio | Complete | Real macOS system audio captured as `system` / `Other`; microphone remained off; JSON and text persisted |
 | 4. Browser dashboard scan | Complete | Persistent manual login, delayed-auth protection, loading protection, card/table extraction, screenshot, no launch action |
 | 5. Launch and join interview | Implemented; live Join validation pending | Live Launch reached the verified pre-call page; `--live` handles optional consent with its own approval and always requires separate Join approval; hang-up and FINISH remain blocked |
-| 6. Question extraction | Not started | Depends on a safely joined test interview |
-| 7. Code editor automation | Not started | Depends on question extraction and a coding-question fixture |
+| 6. Question extraction | Implemented; final multiline fix pending watched revalidation | `questions-scan` reached 17 sequential cards; supplied `.clFESingleSugDet` HTML and automated coverage now preserve multiline text; coding detection awaits the real coding-card fixture |
+| 7. Code editor automation | Not started | Coding-card HTML fixture pending; editor visibility must remain unchanged |
 | 8. Offline session evaluation | Not started | Single-answer evaluator exists; session-level aggregation does not |
 | 9. LangGraph controller | Not started | Depends on browser, transcription, evaluator, timer seams |
 | 10. Feedback autofill | Not started | Must remain behind preview and approval gates |
@@ -1233,22 +1233,22 @@ For each question:
 ### Command
 
 ```bash
-uv run python main.py extract-questions
+uv run python main.py questions-scan --candidate "Exact Candidate Name"
 ```
 
 ### Expected output
 
 ```text
-Extracted 10 questions
-Coding questions: 9, 10
-Saved: runs/<session_id>/questions.json
+Extracted questions: 17
+Coding question IDs: pending real coding-card HTML fixture
+Questions JSON: runs/questions_scan_<timestamp>/questions.json
 ```
 
 ### Pass criteria
 
 - Question numbers match UI.
 - Question text is not truncated if expandable text is available.
-- Coding questions are detected.
+- Coding-question detection remains pending the real coding-card HTML fixture.
 - Screenshot saved for extraction debugging.
 
 ---
@@ -2072,6 +2072,16 @@ live validation also passed against the real Material UI dashboard: the exact
 candidate menu opened, the page did not navigate, and the action log recorded
 `LAUNCH_INTERVIEW` as `BLOCK`.
 
+The Launch-only `questions-scan` workflow is implemented and watched live
+validation reached all 17 normal question records with sequential IDs, ideal
+answers, and four rating guidelines each. Review then found multiline question
+text needed a dedicated binding; the supplied `.clFESingleSugDet` HTML is now
+used and covered by automated tests, pending the next watched revalidation. It
+stores the result in `questions.json`. Coding-question detection awaits the
+real coding-card HTML fixture and is not yet live-validated. It does not click
+Join or change the code-editor visibility toggle, evaluation fields, hang-up,
+or `FINISH`.
+
 ---
 
 ## 25. Handoff Prompt For A New Chat Session
@@ -2114,19 +2124,17 @@ Select a future scheduled candidate and have the human watch the first run.
 
 ## 26. Immediate Next Action
 
-Run one watched live validation against a future scheduled interview—not the
-ended Adik Behera interview:
+Confirm coding-question detection on a future scheduled interview—not the
+ended Adik Behera interview—without enabling the editor for the candidate:
 
 ```bash
-uv run python main.py browser-scan --login-timeout 180
-uv run python main.py join --candidate "Exact Future Candidate" --live
+uv run python main.py questions-scan --candidate "Exact Future Candidate"
 ```
 
-Confirm Launch only when the correct scoped menu is visible. If the verified
-Interviewer Consent Form appears, confirm Consent OK after reviewing it. Then
-confirm Join only when the expected pre-call page is visible. End the interview
-manually and enter the displayed end confirmation. The current automated
-baseline is:
+Confirm Launch only when the correct scoped menu is visible. Verify that coding
+question IDs are reported from the read-only `Code Editor` tab marker. The scan
+must not click Join, switch the tab, or change the code-editor toggle. The
+current automated baseline is:
 
 ```bash
 git status -sb

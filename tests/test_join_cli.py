@@ -15,6 +15,46 @@ def test_join_command_requires_explicit_dry_run_flag() -> None:
         cli.build_parser().parse_args(["join", "--candidate", "Candidate Alpha"])
 
 
+def test_questions_scan_reports_coding_questions_without_join(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session = tmp_path / "runs" / "questions_scan_test"
+    result = SimpleNamespace(
+        questions=(
+            SimpleNamespace(id=1, has_code_editor=False),
+            SimpleNamespace(id=2, has_code_editor=True),
+        ),
+        questions_path=session / "questions.json",
+        screenshot_path=session / "screenshots" / "questions_expanded.png",
+        action_log_path=session / "action_log.jsonl",
+    )
+
+    def fake_scan(settings: object, **kwargs: object) -> object:
+        approval = kwargs["request_approval"]
+        assert isinstance(approval, Callable)
+        return result
+
+    monkeypatch.setattr(cli, "scan_candidate_questions", fake_scan)
+    monkeypatch.setattr(
+        cli,
+        "run_health_checks",
+        lambda settings: SimpleNamespace(overall="READY_FOR_BROWSER_SCAN"),
+    )
+
+    exit_code = cli.main(
+        ["questions-scan", "--candidate", "Candidate Alpha"],
+        project_root=tmp_path,
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Extracted questions: 2" in output
+    assert "Coding question IDs: 2" in output
+    assert "without clicking Join" in output
+
+
 def test_join_command_runs_only_the_dry_run_controller(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

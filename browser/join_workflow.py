@@ -29,6 +29,7 @@ class AmbiguousCandidateError(JoinWorkflowError):
 class PostLaunchState(str, Enum):
     CONSENT = "consent"
     PRE_CALL = "pre_call"
+    QUESTIONS = "questions"
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,13 +64,13 @@ class JoinLiveResult:
 
 
 @dataclass(frozen=True, slots=True)
-class _PreparedLaunch:
+class PreparedLaunch:
     candidate_identifier: str
     candidate_found_screenshot: Path
     launch_control_screenshot: Path
 
 
-class JoinWorkflowPage(Protocol):
+class LaunchWorkflowPage(Protocol):
     def list_join_candidates(self) -> list[JoinCandidate]: ...
 
     def capture_screenshot(self, directory: Path, name: str) -> Path: ...
@@ -80,6 +81,8 @@ class JoinWorkflowPage(Protocol):
 
     def click_launch_interview(self) -> None: ...
 
+
+class JoinWorkflowPage(LaunchWorkflowPage, Protocol):
     def wait_for_consent_form(self) -> None: ...
 
     def wait_for_consent_or_pre_call(self) -> PostLaunchState: ...
@@ -115,14 +118,14 @@ def _candidate_identifier(candidate: JoinCandidate) -> str:
     return f"candidate-{digest}"
 
 
-def _prepare_launch_control(
-    page: JoinWorkflowPage,
+def prepare_launch_control(
+    page: LaunchWorkflowPage,
     *,
     candidate_name: str,
     session_dir: Path,
     action_router: ActionRouter,
     launch_screenshot_name: str,
-) -> _PreparedLaunch:
+) -> PreparedLaunch:
 
     requested_name = normalize_candidate_name(candidate_name)
     candidates = page.list_join_candidates()
@@ -192,7 +195,7 @@ def _prepare_launch_control(
         )
 
     launch_control = page.capture_screenshot(screenshots_dir, launch_screenshot_name)
-    return _PreparedLaunch(
+    return PreparedLaunch(
         candidate_identifier=identifier,
         candidate_found_screenshot=candidate_found,
         launch_control_screenshot=launch_control,
@@ -208,7 +211,7 @@ def run_join_dry_run(
 ) -> JoinDryRunResult:
     """Find one exact candidate and prove launch is blocked by dry-run policy."""
 
-    prepared = _prepare_launch_control(
+    prepared = prepare_launch_control(
         page,
         candidate_name=candidate_name,
         session_dir=session_dir,
@@ -242,7 +245,7 @@ def run_join_live(
 ) -> JoinLiveResult:
     """Launch, accept consent, and Join after three operator approvals."""
 
-    prepared = _prepare_launch_control(
+    prepared = prepare_launch_control(
         page,
         candidate_name=candidate_name,
         session_dir=session_dir,

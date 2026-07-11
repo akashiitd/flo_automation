@@ -18,6 +18,7 @@ from browser.join_workflow import (
     JoinWorkflowError,
     PostLaunchState,
 )
+from browser.question_workflow import ExtractedQuestion
 from browser.screenshots import save_screenshot
 from browser.selectors import (
     ACTIVE_MENU_SELECTORS,
@@ -538,6 +539,247 @@ class FloCareerPage:
                 f"Expected one consent OK control; found {len(visible)}"
             )
         visible[0].click()
+
+    @staticmethod
+    def _question_card_snapshots(
+        page: Page, *, expand: bool
+    ) -> list[dict[str, object]]:
+        return page.evaluate(
+            r"""
+            async ({expand}) => {
+              const visible = (element) => {
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' && rect.height > 0;
+              };
+              const roots = [];
+              const add = (element) => {
+                if (element && visible(element) && !roots.includes(element)) roots.push(element);
+              };
+              document.querySelectorAll(
+                '[data-question-id], [data-testid="question-card"], .question-card, '
+                + '.clMainSingleFESug[id^="container-"]'
+              ).forEach(add);
+              const findRoot = (start, required) => {
+                let node = start;
+                let visualFallback = null;
+                for (let depth = 0; node && depth < 10; depth += 1, node = node.parentElement) {
+                  if (node === document.body || node === document.documentElement) break;
+                  const text = node.innerText || '';
+                  const rect = node.getBoundingClientRect();
+                  const hasNumericChild = [...node.querySelectorAll('*')]
+                    .some(child => /^\d{1,3}$/.test((child.textContent || '').trim()));
+                  if (!visualFallback && rect.width > 450 && rect.height > 140
+                      && ((/Bookmark in Video/i.test(text) && /Mark as/i.test(text))
+                          || /SHOW CODE EDITOR TO CANDIDATE/i.test(text))) {
+                    visualFallback = node;
+                  }
+                  const bookmarkCount = (text.match(/Bookmark in Video/g) || []).length;
+                  const editorToggleCount = (text.match(/SHOW CODE EDITOR TO CANDIDATE/g) || []).length;
+                  if ((/^\s*\d{1,3}\s*$/m.test(text) || hasNumericChild)
+                      && required.every(value => text.includes(value))
+                      && bookmarkCount <= 1 && editorToggleCount <= 1) {
+                    return node;
+                  }
+                }
+                return visualFallback;
+              };
+              if (roots.length === 0) {
+                document.querySelectorAll('textarea').forEach((node) => {
+                  add(findRoot(node, ['Mark as']));
+                });
+                [...document.querySelectorAll('body *')]
+                  .filter(node => ['Bookmark in Video', 'YOUR RATING'].includes((node.textContent || '').trim()))
+                  .forEach(node => add(findRoot(node, ['Mark as'])));
+                [...document.querySelectorAll('body *')]
+                  .filter(node => (node.textContent || '').trim() === 'SHOW CODE EDITOR TO CANDIDATE')
+                  .forEach(node => add(findRoot(node, ['Code Editor'])));
+              }
+
+              if (expand) {
+                for (const root of roots) {
+                  if (root.querySelector('.MuiCollapse-entered')) continue;
+                  const rootTop = root.getBoundingClientRect().top;
+                  const explicit = root.querySelector(
+                    '.question-title, [data-testid="question-title"], [name="title"]'
+                  );
+                  const choices = [...root.querySelectorAll('button, [role="button"], p, span, div')]
+                    .filter(node => {
+                      const text = (node.innerText || '').trim();
+                      const top = node.getBoundingClientRect().top;
+                      return visible(node) && text.length > 20 && text.length < 600
+                        && top - rootTop < 120
+                        && !/Ideal Answer|Guidelines|Bookmark|Feedback|SHOW CODE EDITOR/i.test(text);
+                    });
+                  const target = explicit || choices[0];
+                  if (target) target.click();
+                }
+                await new Promise(resolve => setTimeout(resolve, 500));
+              }
+              return roots.map(root => ({
+                id: root.getAttribute('data-question-id') ||
+                  [...root.querySelectorAll('*')]
+                    .map(node => (node.textContent || '').trim())
+                    .find(text => /^\d{1,3}$/.test(text)),
+                has_code_editor: [...root.querySelectorAll('[role="tab"], button, div')]
+                  .some(node => (node.textContent || '').trim() === 'Code Editor'),
+                expanded_question_text: (() => {
+                  const detail = root.querySelector(
+                    '.MuiCollapse-entered .clFESingleSugDet, '
+                    + '.MuiCollapse-root .clFESingleSugDet'
+                  );
+                  return detail ? detail.innerText.trim() : '';
+                })(),
+                text: root.innerText || '',
+              }));
+            }
+            """,
+            {"expand": expand},
+        )
+
+    @classmethod
+    def _has_question_panel(cls, page: Page) -> bool:
+        body_text = page.locator("body").inner_text(timeout=5_000)
+        return (
+            "Bookmark in Video" in body_text
+            and "Mark as" in body_text
+            and bool(re.search(r"^\s*\d{1,3}\s*$", body_text, re.M))
+        )
+
+    def wait_for_questions_or_consent(
+        self, *, timeout_seconds: float = 30
+    ) -> PostLaunchState:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            matches: list[tuple[Page, PostLaunchState, Locator | None]] = []
+            for candidate_page in reversed(self.page.context.pages):
+                if candidate_page.is_closed() or not self._is_launch_related_page(
+                    candidate_page
+                ):
+                    continue
+                dialogs = self._visible_consent_dialogs(candidate_page)
+                matches.extend(
+                    (candidate_page, PostLaunchState.CONSENT, dialog)
+                    for dialog in dialogs
+                )
+                if self._has_question_panel(candidate_page):
+                    matches.append((candidate_page, PostLaunchState.QUESTIONS, None))
+            if len(matches) == 1:
+                self.page, state, dialog = matches[0]
+                self._active_consent_dialog = dialog
+                return state
+            if len(matches) > 1:
+                consent = [
+                    match for match in matches if match[1] is PostLaunchState.CONSENT
+                ]
+                if len(consent) == 1:
+                    self.page, state, self._active_consent_dialog = consent[0]
+                    return state
+                raise JoinWorkflowError(
+                    "Question page state is ambiguous across browser pages"
+                )
+            self.page.wait_for_timeout(250)
+        raise JoinWorkflowError("Timed out waiting for consent form or question panel")
+
+    def wait_for_question_panel(self, *, timeout_seconds: float = 30) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        stable_polls = 0
+        while time.monotonic() < deadline:
+            if self._has_question_panel(self.page):
+                stable_polls += 1
+                if stable_polls >= 4:
+                    return
+            else:
+                stable_polls = 0
+            self.page.wait_for_timeout(250)
+        raise JoinWorkflowError("Timed out waiting for the interview question panel")
+
+    @staticmethod
+    def _parse_question_snapshot(snapshot: dict[str, object]) -> ExtractedQuestion:
+        raw = str(snapshot.get("text") or "")
+        lines = [_clean_text(line) for line in raw.splitlines() if _clean_text(line)]
+        raw_id = str(snapshot.get("id") or "")
+        id_match = re.search(r"\d+", raw_id) or re.search(
+            r"^\s*(\d{1,3})\s*$", raw, re.M
+        )
+        if id_match is None:
+            raise JoinWorkflowError("A question card has no readable numeric ID")
+        question_id = int(id_match.group(0))
+        stop_labels = re.compile(
+            r"^(?:=+|Ideal Answer|Guidelines for|Bookmark|Mark as|Feedback|YOUR RATING)",
+            re.I,
+        )
+        question_end = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if line.startswith("=") or line.lower().startswith("ideal answer")
+            ),
+            len(lines),
+        )
+        candidates = [
+            line
+            for line in lines[:question_end]
+            if not line.isdigit()
+            and not stop_labels.match(line)
+            and line not in {"Question", "Code Editor", "SHOW CODE EDITOR TO CANDIDATE"}
+            and not any(
+                label in line
+                for label in (
+                    "Bookmark in Video",
+                    "SHOW CODE EDITOR TO CANDIDATE",
+                    "YOUR RATING",
+                    "Use Speech to Text",
+                    "Enhance Feedback",
+                )
+            )
+        ]
+        question_text = max(candidates, key=len, default="")
+        expanded_text = str(snapshot.get("expanded_question_text") or "").strip()
+        if expanded_text:
+            question_text = "\n".join(
+                _clean_text(line)
+                for line in expanded_text.splitlines()
+                if _clean_text(line)
+            )
+        question_text = re.sub(
+            rf"^\s*{re.escape(str(question_id))}\s*", "", question_text
+        )
+
+        def section_after(label: re.Pattern[str]) -> str:
+            for index, line in enumerate(lines):
+                if label.match(line):
+                    values: list[str] = []
+                    for following in lines[index + 1 :]:
+                        if stop_labels.match(following):
+                            break
+                        values.append(following)
+                    return " ".join(values)
+            return ""
+
+        ideal = section_after(re.compile(r"^Ideal Answer", re.I))
+        guidelines: dict[str, str] = {}
+        for stars in range(5, 0, -1):
+            value = section_after(
+                re.compile(rf"^Guidelines for {stars} star rating", re.I)
+            )
+            if value:
+                guidelines[f"{stars}_star"] = value
+        return ExtractedQuestion(
+            id=question_id,
+            question_text=question_text,
+            has_code_editor=bool(snapshot.get("has_code_editor")),
+            ideal_answer=ideal,
+            guidelines=guidelines,
+            feedback_field_locator_hint=f"question:{question_id}:feedback",
+            rating_locator_hint=f"question:{question_id}:rating",
+            mark_as_locator_hint=f"question:{question_id}:mark_as",
+        )
+
+    def extract_questions(self) -> list[ExtractedQuestion]:
+        snapshots = self._question_card_snapshots(self.page, expand=True)
+        questions = [self._parse_question_snapshot(snapshot) for snapshot in snapshots]
+        return sorted(questions, key=lambda question: question.id)
 
     def wait_for_pre_call_page(self, *, timeout_seconds: float = 30) -> None:
         deadline = time.monotonic() + timeout_seconds
