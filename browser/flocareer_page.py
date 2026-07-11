@@ -6,6 +6,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Literal
 
@@ -15,12 +16,14 @@ from browser.join_workflow import (
     CandidateCardHandle,
     JoinCandidate,
     JoinWorkflowError,
+    PostLaunchState,
 )
 from browser.screenshots import save_screenshot
 from browser.selectors import (
     ACTIVE_MENU_SELECTORS,
     CANDIDATE_MENU_BUTTON_SELECTORS,
     INTERVIEW_ROW_SELECTORS,
+    JOINED_INTERVIEW_SELECTORS,
     JOIN_CARD_SELECTORS,
     LOADING_SELECTORS,
     LOGGED_OUT_TEXT,
@@ -34,6 +37,13 @@ class ScheduledInterview:
     company: str
     scheduled_time: str
     summary: str
+
+
+class InterviewPageState(str, Enum):
+    OTHER = "other"
+    CONSENT = "consent"
+    PRE_CALL = "pre_call"
+    JOINED = "joined"
 
 
 def _clean_text(value: str) -> str:
@@ -140,6 +150,9 @@ class FloCareerPage:
         self.page = page
         self._candidate_cards: dict[CandidateCardHandle, Locator] = {}
         self._active_candidate_menu: Locator | None = None
+        self._active_consent_dialog: Locator | None = None
+        self._launch_source_page: Page | None = None
+        self._pages_before_launch: tuple[Page, ...] = ()
 
     def open_dashboard(self, url: str) -> None:
         self.page.goto(url, wait_until="domcontentloaded")
@@ -400,4 +413,181 @@ class FloCareerPage:
             raise JoinWorkflowError(
                 f"Expected one visible launch control; found {len(visible)}"
             )
+        self._launch_source_page = self.page
+        self._pages_before_launch = tuple(self.page.context.pages)
         visible[0].click()
+
+    @staticmethod
+    def _visible_join_controls(page: Page) -> list[Locator]:
+        controls = page.get_by_role("button", name=re.compile(r"^Join$", re.I))
+        return [
+            controls.nth(index)
+            for index in range(controls.count())
+            if controls.nth(index).is_visible()
+        ]
+
+    @staticmethod
+    def _visible_consent_dialogs(page: Page) -> list[Locator]:
+        dialogs = page.get_by_role("dialog").filter(has_text="Interviewer Consent Form")
+        visible = [
+            dialogs.nth(index)
+            for index in range(dialogs.count())
+            if dialogs.nth(index).is_visible()
+        ]
+        if visible:
+            return visible
+
+        headings = page.get_by_text("Interviewer Consent Form", exact=True)
+        for index in range(headings.count()):
+            heading = headings.nth(index)
+            if not heading.is_visible():
+                continue
+            container = heading.locator(
+                "xpath=ancestor::div[.//button[normalize-space()='OK']][1]"
+            )
+            if container.count() == 1 and container.is_visible():
+                visible.append(container)
+        return visible
+
+    def _is_launch_related_page(self, candidate_page: Page) -> bool:
+        is_launch_source = candidate_page is self._launch_source_page
+        existed_before_launch = candidate_page in self._pages_before_launch
+        return is_launch_source or not existed_before_launch
+
+    @classmethod
+    def _page_state(cls, page: Page) -> InterviewPageState:
+        if len(cls._visible_consent_dialogs(page)) == 1:
+            return InterviewPageState.CONSENT
+        joining_as = page.get_by_text(re.compile(r"\bJoining as\b", re.I))
+        visible_joining_as = any(
+            joining_as.nth(index).is_visible() for index in range(joining_as.count())
+        )
+        if visible_joining_as and len(cls._visible_join_controls(page)) == 1:
+            return InterviewPageState.PRE_CALL
+
+        joined_markers = page.locator(", ".join(JOINED_INTERVIEW_SELECTORS))
+        if not cls._visible_join_controls(page) and any(
+            joined_markers.nth(index).is_visible()
+            for index in range(joined_markers.count())
+        ):
+            return InterviewPageState.JOINED
+        return InterviewPageState.OTHER
+
+    def wait_for_consent_or_pre_call(
+        self, *, timeout_seconds: float = 30
+    ) -> PostLaunchState:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            consent_matches: list[tuple[Page, Locator]] = []
+            pre_call_matches: list[Page] = []
+            for candidate_page in reversed(self.page.context.pages):
+                if candidate_page.is_closed() or not self._is_launch_related_page(
+                    candidate_page
+                ):
+                    continue
+                dialogs = self._visible_consent_dialogs(candidate_page)
+                consent_matches.extend((candidate_page, dialog) for dialog in dialogs)
+                if self._page_state(candidate_page) is InterviewPageState.PRE_CALL:
+                    pre_call_matches.append(candidate_page)
+            total_matches = len(consent_matches) + len(pre_call_matches)
+            if total_matches == 1 and consent_matches:
+                self.page, self._active_consent_dialog = consent_matches[0]
+                return PostLaunchState.CONSENT
+            if total_matches == 1:
+                self.page = pre_call_matches[0]
+                return PostLaunchState.PRE_CALL
+            if total_matches > 1:
+                raise JoinWorkflowError(
+                    "Post-Launch state is ambiguous across consent and pre-call pages"
+                )
+            self.page.wait_for_timeout(250)
+        raise JoinWorkflowError(
+            "Timed out waiting for consent form or verified pre-call page"
+        )
+
+    def wait_for_consent_form(self, *, timeout_seconds: float = 30) -> None:
+        state = self.wait_for_consent_or_pre_call(timeout_seconds=timeout_seconds)
+        if state is not PostLaunchState.CONSENT:
+            raise JoinWorkflowError(
+                "Verified pre-call page appeared without a consent form"
+            )
+
+    def visible_consent_ok_count(self) -> int:
+        if self._active_consent_dialog is None:
+            return 0
+        controls = self._active_consent_dialog.get_by_role(
+            "button", name=re.compile(r"^OK$", re.I)
+        )
+        return sum(
+            controls.nth(index).is_visible() for index in range(controls.count())
+        )
+
+    def click_consent_ok(self) -> None:
+        if self._active_consent_dialog is None:
+            raise JoinWorkflowError("No scoped interviewer consent form is active")
+        controls = self._active_consent_dialog.get_by_role(
+            "button", name=re.compile(r"^OK$", re.I)
+        )
+        visible = [
+            controls.nth(index)
+            for index in range(controls.count())
+            if controls.nth(index).is_visible()
+        ]
+        if len(visible) != 1:
+            raise JoinWorkflowError(
+                f"Expected one consent OK control; found {len(visible)}"
+            )
+        visible[0].click()
+
+    def wait_for_pre_call_page(self, *, timeout_seconds: float = 30) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            matches: list[Page] = []
+            for candidate_page in reversed(self.page.context.pages):
+                if candidate_page.is_closed():
+                    continue
+                if not self._is_launch_related_page(candidate_page):
+                    continue
+                if self._page_state(candidate_page) is InterviewPageState.PRE_CALL:
+                    matches.append(candidate_page)
+            if len(matches) == 1:
+                self.page = matches[0]
+                return
+            if len(matches) > 1:
+                raise JoinWorkflowError(
+                    "Multiple pages expose a visible pre-call Join control"
+                )
+            self.page.wait_for_timeout(250)
+        raise JoinWorkflowError("Timed out waiting for the pre-call Join page")
+
+    def visible_join_control_count(self) -> int:
+        return len(self._visible_join_controls(self.page))
+
+    def click_join(self) -> None:
+        if self._page_state(self.page) is not InterviewPageState.PRE_CALL:
+            raise JoinWorkflowError(
+                "Pre-call page is no longer verified; Join was not clicked"
+            )
+        visible = self._visible_join_controls(self.page)
+        if len(visible) != 1:
+            raise JoinWorkflowError(
+                f"Expected one visible Join control; found {len(visible)}"
+            )
+        visible[0].click()
+
+    def wait_for_joined_interview(self, *, timeout_seconds: float = 30) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        stable_polls = 0
+        while time.monotonic() < deadline:
+            if self.page.is_closed():
+                raise JoinWorkflowError("Interview page closed after clicking Join")
+            if self._page_state(self.page) is InterviewPageState.JOINED:
+                stable_polls += 1
+                if stable_polls >= 3:
+                    return
+            else:
+                stable_polls = 0
+            self.page.wait_for_timeout(250)
+        raise JoinWorkflowError(
+            "Timed out waiting for a stable interview room-ready marker"
+        )

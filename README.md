@@ -23,7 +23,8 @@ The complete roadmap and safety constraints are documented in
 | Apple Speech system-audio capture | Implemented | `uv run python main.py listen-test --seconds 60` |
 | Read-only FloCareer dashboard scan | Implemented | `uv run python main.py browser-scan` |
 | Guarded candidate join discovery | Implemented and live-validated | `uv run python main.py join --candidate "Exact Name" --dry-run` |
-| Real join, question extraction, feedback fill, final submit | Not implemented | — |
+| Approved real Launch and Join | Implemented; live validation pending | `uv run python main.py join --candidate "Exact Name" --live` |
+| Question extraction, feedback fill, final submit | Not implemented | — |
 
 ## Safety model
 
@@ -217,6 +218,36 @@ Artifacts are saved under `runs/join_<timestamp>/`:
 ```text
 screenshots/candidate_found.png
 screenshots/join_dry_run.png
+action_log.jsonl
+```
+
+### 8. Launch, accept consent, and Join with separate approvals
+
+Use only for a future scheduled interview while watching the browser:
+
+```bash
+uv run python main.py join --candidate "Exact Candidate Name" --live
+```
+
+The command pauses before Launch and prints a candidate-bound approval phrase.
+After Launch it safely accepts either FloCareer path: when the `Interviewer
+Consent Form` appears, it verifies and screenshots the form and requires a
+separate approval before clicking its scoped `OK`; when consent was previously
+acknowledged, FloCareer may open the verified `Joining as ...` pre-call page
+directly and no consent click is attempted. Join always requires its own
+approval. Each phrase is single-use and is never written to the action log.
+After Join, the browser remains open until you manually end the interview and
+type the displayed end confirmation. Automation never clicks hang-up or
+`FINISH`.
+
+Live-session artifacts are saved under `runs/join_live_<timestamp>/`:
+
+```text
+screenshots/candidate_found.png
+screenshots/launch_approval.png
+screenshots/consent.png
+screenshots/pre_call.png
+screenshots/joined.png
 action_log.jsonl
 ```
 

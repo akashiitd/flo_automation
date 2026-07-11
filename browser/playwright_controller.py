@@ -16,7 +16,13 @@ from app.config import Settings
 from browser.action_guard import ActionGuard, BrowserAction
 from browser.action_router import ActionRouter
 from browser.flocareer_page import FloCareerPage, ScheduledInterview
-from browser.join_workflow import JoinDryRunResult, run_join_dry_run
+from browser.join_workflow import (
+    ApprovalRequester,
+    JoinDryRunResult,
+    JoinLiveResult,
+    run_join_dry_run,
+    run_join_live,
+)
 from browser.screenshots import save_screenshot
 
 
@@ -181,3 +187,46 @@ def join_candidate_dry_run(
             session_dir=session_dir,
             action_router=router,
         )
+
+
+def join_candidate_live(
+    settings: Settings,
+    *,
+    candidate_name: str,
+    request_approval: ApprovalRequester,
+    wait_for_manual_end: Callable[[str], None],
+    login_timeout_seconds: float = 180,
+    progress: Callable[[str], None] | None = None,
+) -> JoinLiveResult:
+    """Launch and Join one candidate after two interactive approvals."""
+
+    report = progress or (lambda message: None)
+    session_id = f"join_live_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    session_dir = settings.runs_dir / session_id
+    screenshots_dir = session_dir / "screenshots"
+    router = ActionRouter(ActionGuard.live_join(), session_dir / "action_log.jsonl")
+
+    with _persistent_flocareer_page(settings) as flocareer:
+        page = flocareer.page
+        report(f"Opening {settings.flocareer_url}")
+        router.route(
+            BrowserAction.OPEN_DASHBOARD,
+            operation=lambda: flocareer.open_dashboard(settings.flocareer_url),
+        )
+        _wait_for_authenticated_dashboard(
+            settings,
+            flocareer,
+            screenshots_dir=screenshots_dir,
+            login_timeout_seconds=login_timeout_seconds,
+            report=report,
+        )
+        page.wait_for_timeout(500)
+        result = run_join_live(
+            flocareer,
+            candidate_name=candidate_name,
+            session_dir=session_dir,
+            action_router=router,
+            request_approval=request_approval,
+        )
+        wait_for_manual_end(result.candidate_identifier)
+        return result

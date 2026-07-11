@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from browser.action_guard import ActionGuard, BrowserAction
+from browser.action_guard import ActionGuard, BrowserAction, approval_token_for
 from browser.action_router import ActionRouter
 
 
@@ -63,3 +63,90 @@ def test_router_does_not_execute_a_blocked_join_action(tmp_path: Path) -> None:
 
     assert decision.allowed is False
     assert calls == []
+
+
+def test_live_join_requires_separate_candidate_bound_approvals() -> None:
+    guard = ActionGuard.live_join()
+    candidate = "candidate-a1b2c3"
+    launch_token = approval_token_for(BrowserAction.LAUNCH_INTERVIEW, candidate)
+    consent_token = approval_token_for(BrowserAction.CLICK_CONSENT_OK, candidate)
+    join_token = approval_token_for(BrowserAction.CLICK_JOIN, candidate)
+
+    assert guard.decide(BrowserAction.LAUNCH_INTERVIEW).allowed is False
+    assert (
+        guard.decide(
+            BrowserAction.LAUNCH_INTERVIEW,
+            candidate_identifier=candidate,
+            approval_token=join_token,
+        ).allowed
+        is False
+    )
+    assert guard.decide(
+        BrowserAction.LAUNCH_INTERVIEW,
+        candidate_identifier=candidate,
+        approval_token=launch_token,
+    ).allowed
+    assert guard.decide(
+        BrowserAction.CLICK_CONSENT_OK,
+        candidate_identifier=candidate,
+        approval_token=consent_token,
+    ).allowed
+    assert guard.decide(
+        BrowserAction.CLICK_JOIN,
+        candidate_identifier=candidate,
+        approval_token=join_token,
+    ).allowed
+
+
+def test_live_join_never_approves_hang_up_or_finish() -> None:
+    guard = ActionGuard.live_join()
+    candidate = "candidate-a1b2c3"
+
+    for action in (BrowserAction.HANG_UP, BrowserAction.FINISH_INTERVIEW):
+        decision = guard.decide(
+            action,
+            candidate_identifier=candidate,
+            approval_token=f"APPROVE-{action.value}-{candidate}",
+        )
+        assert decision.allowed is False
+
+
+def test_router_does_not_write_approval_tokens_to_audit_log(tmp_path: Path) -> None:
+    candidate = "candidate-a1b2c3"
+    token = approval_token_for(BrowserAction.LAUNCH_INTERVIEW, candidate)
+    log_path = tmp_path / "action_log.jsonl"
+    router = ActionRouter(ActionGuard.live_join(), log_path)
+
+    decision = router.route(
+        BrowserAction.LAUNCH_INTERVIEW,
+        operation=lambda: None,
+        candidate_identifier=candidate,
+        approval_token=token,
+    )
+
+    assert decision.allowed is True
+    assert token not in log_path.read_text(encoding="utf-8")
+
+
+def test_router_consumes_a_live_approval_token_once(tmp_path: Path) -> None:
+    candidate = "candidate-a1b2c3"
+    token = approval_token_for(BrowserAction.LAUNCH_INTERVIEW, candidate)
+    calls: list[str] = []
+    router = ActionRouter(ActionGuard.live_join(), tmp_path / "action_log.jsonl")
+
+    first = router.route(
+        BrowserAction.LAUNCH_INTERVIEW,
+        operation=lambda: calls.append("launched"),
+        candidate_identifier=candidate,
+        approval_token=token,
+    )
+    replay = router.route(
+        BrowserAction.LAUNCH_INTERVIEW,
+        operation=lambda: calls.append("launched-again"),
+        candidate_identifier=candidate,
+        approval_token=token,
+    )
+
+    assert first.allowed is True
+    assert replay.allowed is False
+    assert calls == ["launched"]

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import main as cli
+from browser.action_guard import BrowserAction, approval_token_for
 
 
 def test_join_command_requires_explicit_dry_run_flag() -> None:
@@ -64,3 +66,77 @@ def test_join_command_runs_only_the_dry_run_controller(
     assert "Validation passed: launch control found and blocked by dry run" in (
         capsys.readouterr().out
     )
+
+
+def test_live_join_prompts_for_launch_consent_and_join_approvals(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    candidate_identifier = "candidate-a1b2c3"
+    requested_actions: list[BrowserAction] = []
+    typed_tokens = iter(
+        [
+            approval_token_for(BrowserAction.LAUNCH_INTERVIEW, candidate_identifier),
+            approval_token_for(BrowserAction.CLICK_CONSENT_OK, candidate_identifier),
+            approval_token_for(BrowserAction.CLICK_JOIN, candidate_identifier),
+            f"CONFIRM-INTERVIEW-ENDED {candidate_identifier}",
+        ]
+    )
+    session_dir = tmp_path / "runs" / "join_live_test"
+    screenshots = session_dir / "screenshots"
+    screenshots.mkdir(parents=True)
+    result = SimpleNamespace(
+        candidate_identifier=candidate_identifier,
+        candidate_found_screenshot=screenshots / "candidate_found.png",
+        launch_approval_screenshot=screenshots / "launch_approval.png",
+        consent_screenshot=screenshots / "consent.png",
+        pre_call_screenshot=screenshots / "pre_call.png",
+        joined_screenshot=screenshots / "joined.png",
+        action_log_path=session_dir / "action_log.jsonl",
+    )
+
+    def fake_live_join(
+        settings: object,
+        *,
+        candidate_name: str,
+        login_timeout_seconds: float,
+        progress: object,
+        request_approval: Callable[[BrowserAction, str], str | None],
+        wait_for_manual_end: Callable[[str], None],
+    ) -> object:
+        for action in (
+            BrowserAction.LAUNCH_INTERVIEW,
+            BrowserAction.CLICK_CONSENT_OK,
+            BrowserAction.CLICK_JOIN,
+        ):
+            requested_actions.append(action)
+            request_approval(action, candidate_identifier)
+        wait_for_manual_end(candidate_identifier)
+        return result
+
+    monkeypatch.setattr(cli, "join_candidate_live", fake_live_join)
+    monkeypatch.setattr(
+        cli,
+        "run_health_checks",
+        lambda settings: SimpleNamespace(overall="READY_FOR_BROWSER_SCAN"),
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt: next(typed_tokens))
+
+    exit_code = cli.main(
+        ["join", "--candidate", "Candidate Alpha", "--live"],
+        project_root=tmp_path,
+        environ={},
+    )
+
+    assert exit_code == 0
+    assert requested_actions == [
+        BrowserAction.LAUNCH_INTERVIEW,
+        BrowserAction.CLICK_CONSENT_OK,
+        BrowserAction.CLICK_JOIN,
+    ]
+    output = capsys.readouterr().out
+    assert "Launch and Join require separate approvals" in output
+    assert "Consent OK requires another approval when the form is shown" in output
+    assert "The browser will remain open until you confirm it has ended" in output
+    assert "interview joined after all required approvals" in output

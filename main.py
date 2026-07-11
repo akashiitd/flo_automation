@@ -18,10 +18,12 @@ from typing import cast
 
 from app.config import Settings
 from app.health import run_health_checks
+from browser.action_guard import BrowserAction, approval_token_for
 from browser.join_workflow import JoinWorkflowError
 from browser.playwright_controller import (
     BrowserScanError,
     join_candidate_dry_run,
+    join_candidate_live,
     scan_dashboard,
 )
 from evaluator.scoring import evaluate_answer
@@ -376,6 +378,87 @@ def _join_dry_run(
     return 0
 
 
+def _join_live(
+    settings: Settings,
+    *,
+    candidate_name: str,
+    login_timeout_seconds: float,
+) -> int:
+    print("FloCareer approved live join")
+    print("Safety mode: Launch and Join require separate approvals")
+    print("Consent OK requires another approval when the form is shown")
+    print("Hang-up and FINISH are always blocked")
+    health = run_health_checks(settings)
+    if health.overall != "READY_FOR_BROWSER_SCAN":
+        print(health.render(), file=sys.stderr)
+        print("Live join failed: health prerequisites are not ready", file=sys.stderr)
+        return 1
+
+    def request_approval(
+        action: BrowserAction, candidate_identifier: str
+    ) -> str | None:
+        expected = approval_token_for(action, candidate_identifier)
+        print()
+        print(f"Approval required for {action.value}")
+        print(f"Type exactly: {expected}")
+        try:
+            return input("Approval token: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nApproval cancelled", file=sys.stderr)
+            return None
+
+    def wait_for_manual_end(candidate_identifier: str) -> None:
+        expected = f"CONFIRM-INTERVIEW-ENDED {candidate_identifier}"
+        print()
+        print("Interview joined. The automation will not click hang-up.")
+        print("End the interview manually in FloCareer when appropriate.")
+        print("The browser will remain open until you confirm it has ended.")
+        while True:
+            try:
+                entered = input(
+                    f"After it ends, type exactly: {expected}\nConfirmation: "
+                )
+            except (EOFError, KeyboardInterrupt):
+                print(
+                    "\nConfirmation still required; browser remains under the "
+                    "live command's control.",
+                    file=sys.stderr,
+                )
+                time.sleep(1)
+                continue
+            if entered.strip() == expected:
+                return
+            print("Confirmation did not match; browser remains open.")
+
+    try:
+        result = join_candidate_live(
+            settings,
+            candidate_name=candidate_name,
+            login_timeout_seconds=login_timeout_seconds,
+            progress=lambda message: print(message, flush=True),
+            request_approval=request_approval,
+            wait_for_manual_end=wait_for_manual_end,
+        )
+    except (BrowserScanError, JoinWorkflowError) as error:
+        print(f"Live join failed: {error}", file=sys.stderr)
+        return 1
+    except Exception as error:
+        detail = str(error) or type(error).__name__
+        print(f"Live join failed: {detail}", file=sys.stderr)
+        return 1
+
+    print(f"Candidate identifier: {result.candidate_identifier}")
+    if result.consent_screenshot is not None:
+        print(f"Consent screenshot: {result.consent_screenshot}")
+    else:
+        print("Consent form: not shown; FloCareer opened verified pre-call directly")
+    print(f"Pre-call screenshot: {result.pre_call_screenshot}")
+    print(f"Joined screenshot: {result.joined_screenshot}")
+    print(f"Action log: {result.action_log_path}")
+    print("Validation passed: interview joined after all required approvals")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Supervised FloCareer interview automation copilot"
@@ -422,11 +505,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="find one candidate's launch control without launching an interview",
     )
     join.add_argument("--candidate", required=True, help="exact visible candidate name")
-    join.add_argument(
+    join_mode = join.add_mutually_exclusive_group(required=True)
+    join_mode.add_argument(
         "--dry-run",
         action="store_true",
-        required=True,
-        help="required safety mode; launch and Join remain blocked",
+        help="discover the launch control while blocking Launch and Join",
+    )
+    join_mode.add_argument(
+        "--live",
+        action="store_true",
+        help="request approvals for Launch, optional Consent OK, and Join",
     )
     join.add_argument(
         "--login-timeout",
@@ -477,7 +565,13 @@ def main(
             login_timeout_seconds=args.login_timeout,
         )
     if args.command == "join":
-        return _join_dry_run(
+        if args.dry_run:
+            return _join_dry_run(
+                settings,
+                candidate_name=args.candidate,
+                login_timeout_seconds=args.login_timeout,
+            )
+        return _join_live(
             settings,
             candidate_name=args.candidate,
             login_timeout_seconds=args.login_timeout,

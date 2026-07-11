@@ -14,6 +14,7 @@ class ActionRouter:
     def __init__(self, guard: ActionGuard, log_path: Path) -> None:
         self._guard = guard
         self._log_path = log_path
+        self._consumed_approval_tokens: set[str] = set()
 
     @property
     def log_path(self) -> Path:
@@ -25,14 +26,26 @@ class ActionRouter:
         *,
         operation: Callable[[], None] | None = None,
         candidate_identifier: str | None = None,
+        approval_token: str | None = None,
         screenshot_path: Path | None = None,
     ) -> ActionDecision:
-        decision = self._guard.decide(action)
+        unused_approval = (
+            approval_token
+            if approval_token not in self._consumed_approval_tokens
+            else None
+        )
+        decision = self._guard.decide(
+            action,
+            candidate_identifier=candidate_identifier,
+            approval_token=unused_approval,
+        )
         self._append_record(
             decision,
             candidate_identifier=candidate_identifier,
             screenshot_path=screenshot_path,
         )
+        if decision.allowed and approval_token is not None:
+            self._consumed_approval_tokens.add(approval_token)
         if decision.allowed and operation is not None:
             operation()
         return decision

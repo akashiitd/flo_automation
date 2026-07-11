@@ -65,7 +65,7 @@ The following gates passed before this checkpoint was written:
 
 ```text
 uv run pytest
-    -> 35 passed
+    -> 44 passed
 
 uv run ruff check .
     -> passed
@@ -92,7 +92,7 @@ health warning.
 | 2. Provider router and evaluator | Complete | LM Studio and OpenRouter return the same validated schema; JSON repair, strict retry, timeout, low-confidence routing, PII redaction, usage logging |
 | 3. Apple Speech system audio | Complete | Real macOS system audio captured as `system` / `Other`; microphone remained off; JSON and text persisted |
 | 4. Browser dashboard scan | Complete | Persistent manual login, delayed-auth protection, loading protection, card/table extraction, screenshot, no launch action |
-| 5. Launch and join interview | Dry-run implemented and live-validated | `join --candidate ... --dry-run` found the exact Material UI card, opened its scoped menu, and logged a blocked launch; real launch/Join remain unimplemented |
+| 5. Launch and join interview | Implemented; live Join validation pending | Live Launch reached the verified pre-call page; `--live` handles optional consent with its own approval and always requires separate Join approval; hang-up and FINISH remain blocked |
 | 6. Question extraction | Not started | Depends on a safely joined test interview |
 | 7. Code editor automation | Not started | Depends on question extraction and a coding-question fixture |
 | 8. Offline session evaluation | Not started | Single-answer evaluator exists; session-level aggregation does not |
@@ -180,7 +180,7 @@ main.py browser-scan
   layout.
 - Extracts candidate, role, company, date, and time without opening menus.
 - Saves a dashboard screenshot under the session directory.
-- Live validation extracted three scheduled cards and launched no interview.
+- Live validation extracted five scheduled cards and launched no interview.
 
 ### Commands available now
 
@@ -193,6 +193,7 @@ uv run python main.py llm-failover-test
 uv run python main.py listen-test --seconds 60
 uv run python main.py browser-scan --login-timeout 180
 uv run python main.py join --candidate "Exact Candidate Name" --dry-run
+uv run python main.py join --candidate "Exact Candidate Name" --live
 ```
 
 Do not assume commands described later in this plan exist until they appear in
@@ -210,11 +211,14 @@ Allowed now:
 - Open FloCareer and read scheduled-interview cards.
 - Find one exact candidate, open that card's menu, and verify that dry-run
   blocks `Launch Video Interview`.
+- Launch and click pre-call Join only after distinct candidate-bound,
+  single-use approvals in `--live` mode. If the verified Interviewer Consent
+  Form appears, its scoped `OK` requires a third approval; otherwise no consent
+  action is attempted.
 - Save local screenshots, transcripts, and action/usage logs.
 
 Not implemented or not authorized by default:
-- Launch Video Interview.
-- Click Join.
+- Launch or Join without the matching stage approval.
 - Enable a code editor in a live interview.
 - Fill feedback fields.
 - Click hang-up.
@@ -268,6 +272,7 @@ OPEN_DASHBOARD
 FIND_CANDIDATE
 OPEN_CANDIDATE_MENU
 LAUNCH_INTERVIEW
+CLICK_CONSENT_OK
 CLICK_JOIN
 HANG_UP
 FILL_FEEDBACK
@@ -283,6 +288,7 @@ The action guard must apply this policy:
 | Open candidate three-dot menu | Allow, then screenshot | Allow |
 | Read `Launch Video Interview` option | Allow | Allow |
 | Click `Launch Video Interview` | **Block** | Allow only after explicit join approval |
+| Click consent-form `OK` | **Block** | Allow only after separate explicit consent approval |
 | Click pre-call `Join` | **Block** | Allow only after separate explicit join approval |
 | Hang up | **Always block** | **Always block in automation** |
 | Fill feedback | Block | Block until Milestone 10 approval flow |
@@ -388,8 +394,9 @@ passed and the user starts a separate request explicitly authorizing it.
 The detailed requirements remain in Milestones 5 through 13 below. Continue in
 this order and validate before advancing:
 
-1. **Approved real join:** add separate approval for launch and pre-call Join;
-   keep hang-up blocked.
+1. **Approved real join validation:** run one watched future interview through
+   the separate Launch and pre-call Join approvals, plus Consent OK when the
+   form appears; keep hang-up blocked.
 2. **Question extraction:** capture question text, rubric, ideal answer, coding
    flag, and field locator hints into `questions.json`.
 3. **Code editor:** enable only the requested coding card and verify candidate
@@ -1150,9 +1157,13 @@ Dashboard:
 
 1. Locate candidate row.
 2. Click three-dot menu beside candidate.
-3. Click `Launch Video Interview`.
-4. Wait for pre-call page.
-5. Click `Join`.
+3. Request candidate-bound Launch approval and click `Launch Video Interview`.
+4. Wait for either `Interviewer Consent Form` or a verified pre-call page.
+5. If the form appears, save a screenshot, request a separate Consent approval,
+   and click only the form's scoped `OK` button. If FloCareer has remembered a
+   prior acknowledgement, do not attempt a consent click.
+6. Wait for the `Joining as ...` pre-call page.
+7. Request a separate Join approval and click `Join`.
 
 Pre-call page:
 
@@ -1164,7 +1175,7 @@ Join button
 ### Command
 
 ```bash
-uv run python main.py join --candidate "Candidate Name"
+uv run python main.py join --candidate "Candidate Name" --live
 ```
 
 Add dry-run support:
@@ -1177,9 +1188,11 @@ uv run python main.py join --candidate "Candidate Name" --dry-run
 
 - Candidate row is found.
 - Menu opens.
-- `Launch Video Interview` is clicked only when dry-run is false.
+- `Launch Video Interview` is clicked only after its approval.
+- The Interviewer Consent Form is verified and `OK` is clicked only after its
+  separate approval.
 - Join page is reached.
-- `Join` button is clicked.
+- `Join` button is clicked only after its separate approval.
 - Screenshot after joining is saved.
 
 ### Safety rule
@@ -2050,7 +2063,7 @@ OpenRouter returns the same schema after mandatory PII redaction
 failover test proves cloud-disabled blocking and allowed fallback routing
 listen-test captures Chrome/system audio with microphone off
 browser-scan lists scheduled FloCareer cards without launching interviews
-35 automated tests, lint, formatting, type-checking, and compilation pass
+44 automated tests, lint, formatting, type-checking, and compilation pass
 ```
 
 The second sprint's join dry-run implementation is complete. Automated tests,
@@ -2084,19 +2097,36 @@ and an audit log. FloCareer's unlabelled Material UI cards and numeric menu IDs
 have regression coverage. The live run opened the correct menu, stayed on the
 dashboard, and logged LAUNCH_INTERVIEW as BLOCK.
 
+The approved real Launch and Join workflow is implemented but has not been run
+against a real scheduled interview. `join --candidate "Exact Name" --live`
+requires separate candidate-bound, single-use approval phrases immediately
+before Launch and Join, plus consent-form OK when the form appears. After Join,
+it keeps the browser open until the human manually ends the interview and
+confirms that it ended. Hang-up and FINISH are always blocked by the automation.
+
 Use fictional candidate data in tests. Do not request credentials, OTPs, API
 keys, or real interview content. Do not use coordinate clicks or Computer Use
-to force selectors. Do not implement or run the real launch/join path without a
-separate explicit request.
+to force selectors. Do not run live validation against an ended interview.
+Select a future scheduled candidate and have the human watch the first run.
 ```
 
 ---
 
 ## 26. Immediate Next Action
 
-Await a separate explicit authorization before implementing the approved real
-launch and pre-call Join path. Preserve separate approval gates for launch and
-Join, and keep automated hang-up blocked. The current validation baseline is:
+Run one watched live validation against a future scheduled interview—not the
+ended Adik Behera interview:
+
+```bash
+uv run python main.py browser-scan --login-timeout 180
+uv run python main.py join --candidate "Exact Future Candidate" --live
+```
+
+Confirm Launch only when the correct scoped menu is visible. If the verified
+Interviewer Consent Form appears, confirm Consent OK after reviewing it. Then
+confirm Join only when the expected pre-call page is visible. End the interview
+manually and enter the displayed end confirmation. The current automated
+baseline is:
 
 ```bash
 git status -sb
@@ -2106,4 +2136,5 @@ uvx ty check app browser evaluator llm transcriber main.py
 uv run python main.py health
 ```
 
-Do not click `Launch Video Interview` or `Join` until that separate request.
+Do not use an ended interview for validation. Automation must never click
+hang-up or `FINISH`.

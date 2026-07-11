@@ -41,6 +41,17 @@ ACTIVE_MENU_SELECTORS = (
     ".cdk-overlay-pane",
 )
 
+JOINED_INTERVIEW_SELECTORS = (
+    'button[aria-label*="hang up" i]',
+    'button[aria-label*="end call" i]',
+    '[role="button"][aria-label*="hang up" i]',
+    '[role="button"][aria-label*="end call" i]',
+    '[title*="hang up" i]',
+    '[title*="end call" i]',
+    '[data-testid*="hangup" i]',
+    '[data-testid="CallEndIcon"]',
+)
+
 LOGGED_OUT_TEXT = (
     "looks like you are logged out",
     "please log back again",

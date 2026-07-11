@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import pytest
 from playwright.sync_api import sync_playwright
 
 from browser.flocareer_page import FloCareerPage
+from browser.join_workflow import JoinWorkflowError, PostLaunchState
 
 
 def test_dashboard_scan_extracts_rows_without_clicking_actions() -> None:
@@ -268,4 +270,112 @@ def test_material_ui_today_cards_are_parsed_and_bound_to_their_own_menu() -> Non
             "Candidate Alpha",
             "Candidate Beta",
         ]
+        browser.close()
+
+
+def test_approved_launch_reaches_pre_call_and_approved_join_enters_interview() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+        page.set_content(
+            """
+            <h1>Dashboard</h1>
+            <table><tbody><tr data-testid="interview-row">
+              <td>Candidate Alpha</td><td>Engineer</td><td>Example Corp</td>
+              <td>Tomorrow 11:00 AM</td>
+              <td><button aria-label="more" aria-controls="991100"
+                onclick="document.getElementById('991100').hidden=false">⋮</button></td>
+            </tr></tbody></table>
+            <div id="991100" role="menu" hidden>
+              <button onclick="showConsent()">Launch Video Interview</button>
+            </div>
+            <script>
+              function showConsent() {
+                document.body.innerHTML = `
+                  <button>OK</button>
+                  <div role="dialog">
+                    <h2>Interviewer Consent Form</h2>
+                    <p>By clicking OK you acknowledge the instructions.</p>
+                    <button onclick="showPreCall()">OK</button>
+                  </div>`;
+              }
+              function showPreCall() {
+                document.body.innerHTML = `
+                  <h1>Joining as Fictional Interviewer</h1>
+                  <button onclick="showInterview()">Join</button>`;
+              }
+              function showInterview() {
+                document.body.innerHTML = `
+                  <h1>Interview room</h1>
+                  <button aria-label="Hang up">End</button>`;
+              }
+            </script>
+            """
+        )
+        flocareer = FloCareerPage(page)
+        candidate = flocareer.list_join_candidates()[0]
+        flocareer.open_candidate_menu(candidate)
+        unrelated_page = context.new_page()
+        unrelated_page.set_content("<h1>Community chat</h1><button>Join</button>")
+
+        flocareer.click_launch_interview()
+        flocareer.wait_for_consent_form()
+
+        assert flocareer.visible_consent_ok_count() == 1
+        flocareer.click_consent_ok()
+        flocareer.wait_for_pre_call_page()
+
+        assert flocareer.visible_join_control_count() == 1
+        flocareer.click_join()
+        flocareer.wait_for_joined_interview()
+        assert page.get_by_role("heading", name="Interview room").is_visible()
+        browser.close()
+
+
+def test_join_button_disappearing_on_an_error_page_is_not_joined() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content("<h1>Unable to join interview</h1>")
+        flocareer = FloCareerPage(page)
+
+        with pytest.raises(JoinWorkflowError, match="room-ready marker"):
+            flocareer.wait_for_joined_interview(timeout_seconds=0.05)
+
+        browser.close()
+
+
+def test_join_click_revalidates_pre_call_after_operator_pause() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <h1>Dashboard</h1>
+            <table><tbody><tr data-testid="interview-row">
+              <td>Candidate Alpha</td><td>Engineer</td><td>Example Corp</td>
+              <td>Tomorrow 11:00 AM</td>
+              <td><button aria-label="more" aria-controls="991101"
+                onclick="document.getElementById('991101').hidden=false">⋮</button></td>
+            </tr></tbody></table>
+            <div id="991101" role="menu" hidden>
+              <button onclick="document.body.innerHTML='<h1>Joining as AS123</h1><button>Join</button>'">
+                Launch Video Interview
+              </button>
+            </div>
+            """
+        )
+        flocareer = FloCareerPage(page)
+        candidate = flocareer.list_join_candidates()[0]
+        flocareer.open_candidate_menu(candidate)
+        flocareer.click_launch_interview()
+
+        state = flocareer.wait_for_consent_or_pre_call()
+        assert state is PostLaunchState.PRE_CALL
+
+        page.set_content("<h1>Community chat</h1><button>Join</button>")
+        with pytest.raises(JoinWorkflowError, match="no longer verified"):
+            flocareer.click_join()
+
         browser.close()
