@@ -718,13 +718,12 @@ def test_code_editor_actions_are_scoped_to_exact_question() -> None:
         page.set_content(
             """
             <section id="container-normal-12" class="clMainSingleFESug">
-              <span class="question-number">12</span>
+              <span class="clSeqGreen">12</span>
               <button role="tab">Question</button>
               <button role="tab" aria-selected="false"
                 onclick="this.setAttribute('aria-selected', 'true')">Code Editor</button>
               <div class="editor-switch">
-                <input type="checkbox" role="switch"
-                  data-testid="candidate-editor-switch"
+                <input type="checkbox" role="switch" name="codeSwitch-4012"
                   onchange="this.nextElementSibling.textContent = this.checked
                     ? 'HIDE CODE EDITOR TO CANDIDATE'
                     : 'SHOW CODE EDITOR TO CANDIDATE'">
@@ -732,13 +731,12 @@ def test_code_editor_actions_are_scoped_to_exact_question() -> None:
               </div>
             </section>
             <section id="container-normal-13" class="clMainSingleFESug">
-              <span class="question-number">13</span>
+              <span class="clSeqGreen">13</span>
               <button role="tab">Question</button>
               <button role="tab" aria-selected="false"
                 onclick="this.setAttribute('aria-selected', 'true')">Code Editor</button>
               <div class="editor-switch">
-                <input type="checkbox" role="switch"
-                  data-testid="candidate-editor-switch"
+                <input type="checkbox" role="switch" name="codeSwitch-4013"
                   onchange="this.nextElementSibling.textContent = this.checked
                     ? 'HIDE CODE EDITOR TO CANDIDATE'
                     : 'SHOW CODE EDITOR TO CANDIDATE'">
@@ -747,20 +745,18 @@ def test_code_editor_actions_are_scoped_to_exact_question() -> None:
             </section>
             """
         )
-        flocareer = FloCareerPage(
-            page,
-            code_editor_switch_selector='[data-testid="candidate-editor-switch"]',
-        )
+        flocareer = FloCareerPage(page)
 
         flocareer.open_code_editor_tab(13)
         before = flocareer.read_code_editor_visibility(13)
+        assert before is CodeEditorVisibility.HIDDEN
+        assert not page.locator("#container-normal-13 [role='switch']").is_checked()
         flocareer.click_show_code_editor(13)
         flocareer.wait_for_code_editor_visibility(
             13,
             CodeEditorVisibility.VISIBLE,
         )
 
-        assert before is CodeEditorVisibility.HIDDEN
         assert (
             page.locator("#container-normal-13 [role='tab']")
             .get_by_text("Code Editor", exact=True)
@@ -824,7 +820,7 @@ def test_code_editor_show_fails_closed_without_real_switch_contract() -> None:
             """
         )
 
-        with pytest.raises(CodeEditorWorkflowError, match="switch control contract"):
+        with pytest.raises(CodeEditorWorkflowError, match="code-editor switch"):
             FloCareerPage(page).click_show_code_editor(13)
 
         assert page.evaluate("Boolean(window.guessedClick)") is False
@@ -844,7 +840,8 @@ def test_question_action_identity_ignores_unrelated_numeric_content() -> None:
             </section>
             <section class="clMainSingleFESug">
               <span class="question-number">13</span>
-              <button role="tab" aria-selected="false">Code Editor</button>
+              <button role="tab" aria-selected="false"
+                onclick="this.setAttribute('aria-selected', 'true')">Code Editor</button>
             </section>
             """
         )

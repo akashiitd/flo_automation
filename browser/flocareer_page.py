@@ -162,11 +162,8 @@ class FloCareerPage:
     def __init__(
         self,
         page: Page,
-        *,
-        code_editor_switch_selector: str | None = None,
     ) -> None:
         self.page = page
-        self._code_editor_switch_selector = code_editor_switch_selector
         self._active_candidate_identifier: str | None = None
         self._candidate_cards: dict[CandidateCardHandle, Locator] = {}
         self._active_candidate_menu: Locator | None = None
@@ -1164,7 +1161,7 @@ class FloCareerPage:
                 matches.append(root)
                 continue
             number = root.locator(
-                "[data-question-number], .question-number"
+                "[data-question-number], .question-number, .clSeqGreen"
             ).get_by_text(str(question_id), exact=True)
             if any(
                 number.nth(number_index).is_visible()
@@ -1199,6 +1196,22 @@ class FloCareerPage:
         root.scroll_into_view_if_needed()
         if tabs[0].get_attribute("aria-selected") != "true":
             tabs[0].click()
+        if not self.code_editor_tab_is_active(question_id):
+            raise CodeEditorWorkflowError(
+                f"Code Editor tab did not become active for question {question_id}"
+            )
+
+    def code_editor_tab_is_active(self, question_id: int) -> bool:
+        root = self._question_root(question_id)
+        tabs = self._visible_locators(
+            root.get_by_role("tab", name="Code Editor", exact=True)
+        )
+        if len(tabs) != 1:
+            raise CodeEditorWorkflowError(
+                f"Expected one Code Editor tab in question {question_id}; "
+                f"found {len(tabs)}"
+            )
+        return tabs[0].get_attribute("aria-selected") == "true"
 
     def _code_editor_state_label(self, question_id: int) -> Locator:
         root = self._question_root(question_id)
@@ -1228,18 +1241,13 @@ class FloCareerPage:
             raise CodeEditorWorkflowError(
                 f"Code editor for question {question_id} is no longer hidden"
             )
-        if self._code_editor_switch_selector is None:
-            raise CodeEditorWorkflowError(
-                "The real code-editor switch control contract is unavailable; "
-                "no click was attempted"
-            )
         root = self._question_root(question_id)
         controls = self._visible_locators(
-            root.locator(self._code_editor_switch_selector)
+            root.locator('input[type="checkbox"][name^="codeSwitch-"]')
         )
         if len(controls) != 1:
             raise CodeEditorWorkflowError(
-                f"Expected one contracted switch for question {question_id}; "
+                f"Expected one code-editor switch for question {question_id}; "
                 f"found {len(controls)}"
             )
         controls[0].click()

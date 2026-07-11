@@ -27,6 +27,7 @@ class FakeCodeEditorPage:
         self.wait_error = wait_error
         self.opened_questions: list[int] = []
         self.clicks: list[int] = []
+        self.tab_active = True
 
     def active_candidate_matches(self, candidate_identifier: str) -> bool:
         return self.candidate_identifier == candidate_identifier
@@ -39,6 +40,10 @@ class FakeCodeEditorPage:
 
     def open_code_editor_tab(self, question_id: int) -> None:
         self.opened_questions.append(question_id)
+        self.tab_active = True
+
+    def code_editor_tab_is_active(self, question_id: int) -> bool:
+        return self.tab_active
 
     def read_code_editor_visibility(self, question_id: int) -> CodeEditorVisibility:
         return self.visibility
@@ -183,6 +188,32 @@ def test_state_is_revalidated_after_operator_approval_pause(tmp_path: Path) -> N
 
     assert result.changed is False
     assert result.visibility is CodeEditorVisibility.VISIBLE
+    assert page.clicks == []
+
+
+def test_active_editor_tab_is_revalidated_after_operator_approval_pause(
+    tmp_path: Path,
+) -> None:
+    page = FakeCodeEditorPage(CodeEditorVisibility.HIDDEN)
+
+    def approve_after_tab_change(
+        action: BrowserAction,
+        identifier: str,
+        question_id: int,
+    ) -> str:
+        page.tab_active = False
+        return approval_token_for(action, identifier, question_id=question_id)
+
+    with pytest.raises(CodeEditorWorkflowError, match="no longer active"):
+        run_show_code_editor(
+            page,
+            candidate_identifier="candidate-a1b2c3",
+            question_id=13,
+            session_dir=tmp_path,
+            action_router=_router(tmp_path),
+            request_approval=approve_after_tab_change,
+        )
+
     assert page.clicks == []
 
 

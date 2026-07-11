@@ -33,6 +33,8 @@ class CodeEditorPage(Protocol):
 
     def click_show_code_editor(self, question_id: int) -> None: ...
 
+    def code_editor_tab_is_active(self, question_id: int) -> bool: ...
+
     def wait_for_code_editor_visibility(
         self,
         question_id: int,
@@ -158,6 +160,10 @@ def run_show_code_editor(
 
     def click_after_final_revalidation() -> None:
         _require_active_candidate(page, candidate_identifier)
+        if not page.code_editor_tab_is_active(question_id):
+            raise CodeEditorWorkflowError(
+                f"Code Editor tab for question {question_id} is no longer active"
+            )
         if (
             page.read_code_editor_visibility(question_id)
             is not CodeEditorVisibility.HIDDEN
