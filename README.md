@@ -22,7 +22,8 @@ The complete roadmap and safety constraints are documented in
 | Guarded provider failover | Implemented | `uv run python main.py llm-failover-test` |
 | Apple Speech system-audio capture | Implemented | `uv run python main.py listen-test --seconds 60` |
 | Read-only FloCareer dashboard scan | Implemented | `uv run python main.py browser-scan` |
-| Join, question extraction, feedback fill, final submit | Not implemented | — |
+| Guarded candidate join discovery | Implemented and live-validated | `uv run python main.py join --candidate "Exact Name" --dry-run` |
+| Real join, question extraction, feedback fill, final submit | Not implemented | — |
 
 ## Safety model
 
@@ -196,6 +197,28 @@ runs/browser_scan_<timestamp>/screenshots/dashboard.png
 ```
 
 It does not click the three-dot menu or launch an interview.
+
+### 7. Validate a candidate's launch control safely
+
+After confirming the exact visible candidate name with `browser-scan`, run:
+
+```bash
+uv run python main.py join --candidate "Exact Candidate Name" --dry-run
+```
+
+The command requires `--dry-run`. It selects exactly one case-insensitive exact
+name match, opens only that candidate card's menu, confirms one visible
+`Launch Video Interview` control, and proves the launch action is blocked. It
+never clicks Launch or Join. Missing names do not fuzzy-match and duplicate
+names stop as ambiguous.
+
+Artifacts are saved under `runs/join_<timestamp>/`:
+
+```text
+screenshots/candidate_found.png
+screenshots/join_dry_run.png
+action_log.jsonl
+```
 
 ## Validation and development
 

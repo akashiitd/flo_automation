@@ -18,7 +18,12 @@ from typing import cast
 
 from app.config import Settings
 from app.health import run_health_checks
-from browser.playwright_controller import BrowserScanError, scan_dashboard
+from browser.join_workflow import JoinWorkflowError
+from browser.playwright_controller import (
+    BrowserScanError,
+    join_candidate_dry_run,
+    scan_dashboard,
+)
 from evaluator.scoring import evaluate_answer
 from llm.lmstudio_provider import LMStudioProvider
 from llm.openrouter_provider import OpenRouterProvider
@@ -333,6 +338,44 @@ def _browser_scan(settings: Settings, *, login_timeout_seconds: float) -> int:
     return 0
 
 
+def _join_dry_run(
+    settings: Settings,
+    *,
+    candidate_name: str,
+    login_timeout_seconds: float,
+) -> int:
+    print("FloCareer guarded join discovery")
+    print("Safety mode: dry run; launch and Join actions are blocked")
+    health = run_health_checks(settings)
+    if health.overall != "READY_FOR_BROWSER_SCAN":
+        print(health.render(), file=sys.stderr)
+        print(
+            "Join dry run failed: health prerequisites are not ready", file=sys.stderr
+        )
+        return 1
+    try:
+        result = join_candidate_dry_run(
+            settings,
+            candidate_name=candidate_name,
+            login_timeout_seconds=login_timeout_seconds,
+            progress=lambda message: print(message, flush=True),
+        )
+    except (BrowserScanError, JoinWorkflowError) as error:
+        print(f"Join dry run failed: {error}", file=sys.stderr)
+        return 1
+    except Exception as error:
+        detail = str(error) or type(error).__name__
+        print(f"Join dry run failed: {detail}", file=sys.stderr)
+        return 1
+
+    print(f"Candidate identifier: {result.candidate_identifier}")
+    print(f"Candidate screenshot: {result.candidate_found_screenshot}")
+    print(f"Dry-run screenshot: {result.join_dry_run_screenshot}")
+    print(f"Action log: {result.action_log_path}")
+    print("Validation passed: launch control found and blocked by dry run")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Supervised FloCareer interview automation copilot"
@@ -369,6 +412,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="open and read the FloCareer dashboard without launching interviews",
     )
     browser_scan.add_argument(
+        "--login-timeout",
+        type=_positive_seconds,
+        default=180.0,
+        help="seconds to wait for manual login in the opened browser",
+    )
+    join = subcommands.add_parser(
+        "join",
+        help="find one candidate's launch control without launching an interview",
+    )
+    join.add_argument("--candidate", required=True, help="exact visible candidate name")
+    join.add_argument(
+        "--dry-run",
+        action="store_true",
+        required=True,
+        help="required safety mode; launch and Join remain blocked",
+    )
+    join.add_argument(
         "--login-timeout",
         type=_positive_seconds,
         default=180.0,
@@ -414,6 +474,12 @@ def main(
     if args.command == "browser-scan":
         return _browser_scan(
             settings,
+            login_timeout_seconds=args.login_timeout,
+        )
+    if args.command == "join":
+        return _join_dry_run(
+            settings,
+            candidate_name=args.candidate,
             login_timeout_seconds=args.login_timeout,
         )
     raise AssertionError(f"Unhandled command: {args.command}")

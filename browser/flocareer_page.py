@@ -1,16 +1,27 @@
-"""Read-only FloCareer dashboard page model."""
+"""FloCareer page model for reads and explicitly guarded reversible actions."""
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
-from playwright.sync_api import Page
+from playwright.sync_api import Locator, Page
 
+from browser.join_workflow import (
+    CandidateCardHandle,
+    JoinCandidate,
+    JoinWorkflowError,
+)
+from browser.screenshots import save_screenshot
 from browser.selectors import (
+    ACTIVE_MENU_SELECTORS,
+    CANDIDATE_MENU_BUTTON_SELECTORS,
     INTERVIEW_ROW_SELECTORS,
+    JOIN_CARD_SELECTORS,
     LOADING_SELECTORS,
     LOGGED_OUT_TEXT,
 )
@@ -30,9 +41,9 @@ def _clean_text(value: str) -> str:
 
 
 _DATE_LINE = re.compile(
-    r"^(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"^(?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
     r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|"
-    r"Dec(?:ember)?)\s+\d{1,2},\s+\d{4}$",
+    r"Dec(?:ember)?)\s+\d{1,2},\s+\d{4}|TODAY|TOMORROW)$",
     re.IGNORECASE,
 )
 _CARD_NOISE = {
@@ -40,6 +51,7 @@ _CARD_NOISE = {
     "notification",
     "⋮",
     "more_vert",
+    "it's time",
 }
 
 
@@ -122,10 +134,12 @@ def parse_scheduled_interviews_text(text: str) -> list[ScheduledInterview]:
 
 
 class FloCareerPage:
-    """Expose only non-destructive dashboard operations."""
+    """Expose dashboard reads and candidate-scoped reversible menu actions."""
 
     def __init__(self, page: Page) -> None:
         self.page = page
+        self._candidate_cards: dict[CandidateCardHandle, Locator] = {}
+        self._active_candidate_menu: Locator | None = None
 
     def open_dashboard(self, url: str) -> None:
         self.page.goto(url, wait_until="domcontentloaded")
@@ -236,3 +250,154 @@ class FloCareerPage:
         return parse_scheduled_interviews_text(
             self.page.locator("body").inner_text(timeout=5_000)
         )
+
+    def list_join_candidates(self) -> list[JoinCandidate]:
+        """Bind interviews from the proven parser to card-scoped controls."""
+
+        interviews = self.scan_scheduled_interviews()
+        best_candidates: list[JoinCandidate] = []
+        best_cards: dict[CandidateCardHandle, Locator] = {}
+        for selector_index, selector in enumerate(JOIN_CARD_SELECTORS):
+            roots = self.page.locator(selector)
+            candidates: list[JoinCandidate] = []
+            cards: dict[CandidateCardHandle, Locator] = {}
+            for index in range(min(roots.count(), 100)):
+                root = roots.nth(index)
+                matches = [
+                    interview
+                    for interview in interviews
+                    if root.get_by_text(interview.candidate_name, exact=True).count()
+                    > 0
+                ]
+                distinct_names = {item.candidate_name.casefold() for item in matches}
+                if len(distinct_names) != 1:
+                    continue
+                interview = matches[0]
+                handle = CandidateCardHandle(f"card-{selector_index}-{index}")
+                candidates.append(
+                    JoinCandidate(
+                        candidate_name=interview.candidate_name,
+                        scheduled_time=interview.scheduled_time,
+                        card_handle=handle,
+                    )
+                )
+                cards[handle] = root
+            if len(candidates) > len(best_candidates):
+                best_candidates = candidates
+                best_cards = cards
+            if interviews and len(candidates) == len(interviews):
+                break
+        if interviews and not best_candidates:
+            fallback_cards: dict[CandidateCardHandle, Locator] = {}
+            fallback_candidates: list[JoinCandidate] = []
+            for interview_index, interview in enumerate(interviews):
+                name_nodes = self.page.get_by_text(interview.candidate_name, exact=True)
+                for node_index in range(name_nodes.count()):
+                    node = name_nodes.nth(node_index)
+                    if not node.is_visible():
+                        continue
+                    card = node.locator(
+                        "xpath=ancestor::div[.//button["
+                        "translate(@aria-label, "
+                        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+                        "'abcdefghijklmnopqrstuvwxyz')='more']][1]"
+                    )
+                    if card.count() != 1:
+                        continue
+                    handle = CandidateCardHandle(
+                        f"candidate-relative-{interview_index}-{node_index}"
+                    )
+                    fallback_candidates.append(
+                        JoinCandidate(
+                            candidate_name=interview.candidate_name,
+                            scheduled_time=interview.scheduled_time,
+                            card_handle=handle,
+                        )
+                    )
+                    fallback_cards[handle] = card
+            best_candidates = fallback_candidates
+            best_cards = fallback_cards
+        self._candidate_cards = best_cards
+        return best_candidates
+
+    def capture_screenshot(self, directory: Path, name: str) -> Path:
+        return save_screenshot(self.page, directory, name)
+
+    def open_candidate_menu(self, candidate: JoinCandidate) -> None:
+        card = self._candidate_cards.get(candidate.card_handle)
+        if card is None:
+            raise JoinWorkflowError("Candidate card handle is no longer available")
+        for selector in CANDIDATE_MENU_BUTTON_SELECTORS:
+            controls = card.locator(selector)
+            visible = [
+                controls.nth(index)
+                for index in range(controls.count())
+                if controls.nth(index).is_visible()
+            ]
+            if len(visible) == 1:
+                control = visible[0]
+                control.click()
+                self._active_candidate_menu = self._resolve_active_menu(control)
+                return
+            if len(visible) > 1:
+                raise JoinWorkflowError(
+                    "Matched candidate card has multiple visible menu controls"
+                )
+        raise JoinWorkflowError("Matched candidate card has no visible menu control")
+
+    def _resolve_active_menu(self, control: Locator) -> Locator:
+        controlled_id = control.get_attribute("aria-controls") or control.get_attribute(
+            "aria-owns"
+        )
+        if controlled_id:
+            controlled = self.page.locator(f"[id={json.dumps(controlled_id)}]")
+            if controlled.count() == 1 and controlled.is_visible():
+                return controlled
+
+        for _ in range(8):
+            for selector in ACTIVE_MENU_SELECTORS:
+                menus = self.page.locator(selector).filter(
+                    has_text="Launch Video Interview"
+                )
+                visible = [
+                    menus.nth(index)
+                    for index in range(menus.count())
+                    if menus.nth(index).is_visible()
+                ]
+                if len(visible) == 1:
+                    return visible[0]
+                if len(visible) > 1:
+                    raise JoinWorkflowError(
+                        "Candidate menu resolved to multiple visible launch menus"
+                    )
+            self.page.wait_for_timeout(250)
+        raise JoinWorkflowError(
+            "Could not bind the candidate menu to a visible launch control"
+        )
+
+    def visible_launch_control_count(self) -> int:
+        if self._active_candidate_menu is None:
+            return 0
+        controls = self._active_candidate_menu.get_by_text(
+            "Launch Video Interview", exact=True
+        )
+        return sum(
+            controls.nth(index).is_visible() for index in range(controls.count())
+        )
+
+    def click_launch_interview(self) -> None:
+        if self._active_candidate_menu is None:
+            raise JoinWorkflowError("No candidate-scoped menu is active")
+        controls = self._active_candidate_menu.get_by_text(
+            "Launch Video Interview", exact=True
+        )
+        visible = [
+            controls.nth(index)
+            for index in range(controls.count())
+            if controls.nth(index).is_visible()
+        ]
+        if len(visible) != 1:
+            raise JoinWorkflowError(
+                f"Expected one visible launch control; found {len(visible)}"
+            )
+        visible[0].click()

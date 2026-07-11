@@ -26,7 +26,7 @@ the synthetic interviewer voice throughout the interview.
 
 ---
 
-## Current Implementation Status (2026-07-10)
+## Current Implementation Status (2026-07-11)
 
 This section is the execution checkpoint for a new development session. The
 sections below it remain the detailed target specification. When this status
@@ -65,7 +65,7 @@ The following gates passed before this checkpoint was written:
 
 ```text
 uv run pytest
-    -> 22 passed
+    -> 35 passed
 
 uv run ruff check .
     -> passed
@@ -92,7 +92,7 @@ health warning.
 | 2. Provider router and evaluator | Complete | LM Studio and OpenRouter return the same validated schema; JSON repair, strict retry, timeout, low-confidence routing, PII redaction, usage logging |
 | 3. Apple Speech system audio | Complete | Real macOS system audio captured as `system` / `Other`; microphone remained off; JSON and text persisted |
 | 4. Browser dashboard scan | Complete | Persistent manual login, delayed-auth protection, loading protection, card/table extraction, screenshot, no launch action |
-| 5. Launch and join interview | Not started | **Next milestone: implement `join --candidate ... --dry-run` first** |
+| 5. Launch and join interview | Dry-run implemented and live-validated | `join --candidate ... --dry-run` found the exact Material UI card, opened its scoped menu, and logged a blocked launch; real launch/Join remain unimplemented |
 | 6. Question extraction | Not started | Depends on a safely joined test interview |
 | 7. Code editor automation | Not started | Depends on question extraction and a coding-question fixture |
 | 8. Offline session evaluation | Not started | Single-answer evaluator exists; session-level aggregation does not |
@@ -192,6 +192,7 @@ uv run python main.py llm-test --provider openrouter
 uv run python main.py llm-failover-test
 uv run python main.py listen-test --seconds 60
 uv run python main.py browser-scan --login-timeout 180
+uv run python main.py join --candidate "Exact Candidate Name" --dry-run
 ```
 
 Do not assume commands described later in this plan exist until they appear in
@@ -207,6 +208,8 @@ Allowed now:
 - Run local/cloud evaluator tests under configured privacy policy.
 - Capture system audio with microphone off.
 - Open FloCareer and read scheduled-interview cards.
+- Find one exact candidate, open that card's menu, and verify that dry-run
+  blocks `Launch Video Interview`.
 - Save local screenshots, transcripts, and action/usage logs.
 
 Not implemented or not authorized by default:
@@ -223,9 +226,12 @@ Runtime candidate data, transcripts, screenshots, browser profiles, `.env`, and
 API keys must remain excluded from Git. Public tests and documentation must use
 fictional candidate and company names.
 
-### Next milestone: guarded join dry-run
+### Completed validation milestone: guarded join dry-run
 
-The next session should implement only the dry-run half of Milestone 5 first:
+The dry-run half of Milestone 5 was live-validated against a visible scheduled
+interview. It found the exact candidate in FloCareer's Material UI grid, opened
+only that candidate's menu, found one launch control, and recorded a `BLOCK`
+decision without navigating away from the dashboard:
 
 ```bash
 uv run python main.py join --candidate "Candidate Name" --dry-run
@@ -2044,11 +2050,14 @@ OpenRouter returns the same schema after mandatory PII redaction
 failover test proves cloud-disabled blocking and allowed fallback routing
 listen-test captures Chrome/system audio with microphone off
 browser-scan lists scheduled FloCareer cards without launching interviews
-22 automated tests, lint, formatting, type-checking, and compilation pass
+35 automated tests, lint, formatting, type-checking, and compilation pass
 ```
 
-The second sprint starts with join dry-run only. Do not combine dry-run and real
-join implementation into one unreviewed step.
+The second sprint's join dry-run implementation is complete. Automated tests,
+lint, formatting, type-checking, CLI help, and runtime health pass. A watched
+live validation also passed against the real Material UI dashboard: the exact
+candidate menu opened, the page did not navigate, and the action log recorded
+`LAUNCH_INTERVIEW` as `BLOCK`.
 
 ---
 
@@ -2060,7 +2069,7 @@ Use this prompt in another session:
 Continue the supervised FloCareer interview copilot in:
 https://github.com/akashiitd/flo_automation
 
-First read README.md and the "Current Implementation Status (2026-07-10)"
+First read README.md and the "Current Implementation Status (2026-07-11)"
 section at the top of FLOCAREER_AUTOMATION_PLAN.md. Inspect git status and the
 latest commits before editing.
 
@@ -2069,35 +2078,25 @@ OpenRouter structured evaluation, Apple Speech system-audio capture, and a
 read-only persistent Playwright dashboard scan. The configured local model is
 ornith-1.0-35b. Do not rebuild these components.
 
-Implement only the next milestone:
-uv run python main.py join --candidate "Candidate Name" --dry-run
-
-Use TDD at the public action-guard and join-workflow seams. Add an explicit
-action vocabulary and guard. Dry-run may find the exact candidate, open that
-candidate's three-dot menu, verify the Launch Video Interview option, save
-screenshots/action_log.jsonl, and then stop. It must block Launch, Join,
-hang-up, feedback, and FINISH. Missing or duplicate candidate matches must stop
-visibly; never choose the first fuzzy match.
+The guarded join dry-run is implemented and live-validated with typed action
+policy, exact candidate matching, candidate-scoped menu selection, screenshots,
+and an audit log. FloCareer's unlabelled Material UI cards and numeric menu IDs
+have regression coverage. The live run opened the correct menu, stayed on the
+dashboard, and logged LAUNCH_INTERVIEW as BLOCK.
 
 Use fictional candidate data in tests. Do not request credentials, OTPs, API
 keys, or real interview content. Do not use coordinate clicks or Computer Use
-to force selectors. Do not implement the real launch/join path in the same
-change. Run pytest, Ruff, ty, health, browser-scan, and one watched live dry-run.
-Review the change, commit it intentionally, and push only after validation.
+to force selectors. Do not implement or run the real launch/join path without a
+separate explicit request.
 ```
 
 ---
 
 ## 26. Immediate Next Action
 
-Implement the join dry-run described in the status section:
-
-```bash
-uv run python main.py join --candidate "Candidate Name" --dry-run
-```
-
-Start with the action guard and fictional Playwright fixtures. Run the existing
-baseline first:
+Await a separate explicit authorization before implementing the approved real
+launch and pre-call Join path. Preserve separate approval gates for launch and
+Join, and keep automated hang-up blocked. The current validation baseline is:
 
 ```bash
 git status -sb
@@ -2105,8 +2104,6 @@ uv run pytest
 uv run ruff check .
 uvx ty check app browser evaluator llm transcriber main.py
 uv run python main.py health
-uv run python main.py browser-scan --login-timeout 180
 ```
 
-Do not click `Launch Video Interview` or `Join` during this milestone. A real
-join requires a later, separate explicit authorization after dry-run passes.
+Do not click `Launch Video Interview` or `Join` until that separate request.

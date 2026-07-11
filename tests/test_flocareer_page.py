@@ -162,3 +162,110 @@ def test_dashboard_must_remain_ready_during_the_stability_window() -> None:
         browser.close()
 
     assert stable is False
+
+
+def test_join_candidate_menu_is_scoped_to_the_selected_card() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <h1>Dashboard</h1>
+            <table><tbody>
+              <tr data-testid="interview-row">
+                <td>Candidate Alpha</td><td>Engineer</td><td>Example Corp</td>
+                <td>Today 11:00 AM</td>
+                <td><button aria-label="More options" aria-controls="alpha-menu" onclick="window.opened='alpha'; showMenu('alpha-menu')">⋮</button></td>
+              </tr>
+              <tr data-testid="interview-row">
+                <td>Candidate Beta</td><td>Engineer</td><td>Northwind Labs</td>
+                <td>Today 4:00 PM</td>
+                <td><button aria-label="More options" aria-controls="2253030" onclick="window.opened='beta'; showMenu('2253030')">⋮</button></td>
+              </tr>
+            </tbody></table>
+            <div role="menu"><button>Launch Video Interview</button></div>
+            <div id="alpha-menu" role="menu" hidden><button>Launch Video Interview</button></div>
+            <div id="2253030" role="menu" hidden><button>Launch Video Interview</button></div>
+            <script>
+              function showMenu(id) {
+                document.getElementById(id).hidden = false;
+              }
+            </script>
+            """
+        )
+        flocareer = FloCareerPage(page)
+
+        candidates = flocareer.list_join_candidates()
+        flocareer.open_candidate_menu(candidates[1])
+
+        assert page.evaluate("window.opened") == "beta"
+        assert flocareer.visible_launch_control_count() == 1
+        browser.close()
+
+
+def test_join_candidates_are_bound_only_from_scheduled_parser_results() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <h1>Dashboard</h1>
+            <article><div>Help Center</div><button>⋮</button></article>
+            <section>
+              <h2>SCHEDULED INTERVIEWS (1)</h2>
+              <article>
+                <div>Candidate Alpha</div><div>ML Engineer</div>
+                <div>Example Corp</div><div>Jul 11, 2026</div>
+                <div>at 11:00 AM (IST)</div><button aria-label="More options">⋮</button>
+              </article>
+            </section>
+            <section><h2>PENDING ACTIONS</h2></section>
+            """
+        )
+
+        candidates = FloCareerPage(page).list_join_candidates()
+
+        assert [candidate.candidate_name for candidate in candidates] == [
+            "Candidate Alpha"
+        ]
+        browser.close()
+
+
+def test_material_ui_today_cards_are_parsed_and_bound_to_their_own_menu() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <h1>Dashboard</h1><h2>SCHEDULED<br>INTERVIEWS (2)</h2>
+            <div>
+              <div>
+                <div><div class="jss44">Candidate Alpha</div></div>
+                <div>ML Engineer</div><div>Example Corp</div>
+                <div>TODAY</div><div>at 12:00 PM (IST)</div><div>It's Time</div>
+                <button aria-label="more" onclick="window.opened='alpha'">⋮</button>
+              </div>
+              <div>
+                <div><div class="jss44">Candidate Beta</div></div>
+                <div>Data Analyst</div><div>Northwind Labs</div>
+                <div>TODAY</div><div>at 4:00 PM (IST)</div>
+                <button aria-label="more" onclick="window.opened='beta'">⋮</button>
+              </div>
+            </div>
+            <h2>PENDING ACTIONS</h2>
+            """
+        )
+        flocareer = FloCareerPage(page)
+
+        interviews = flocareer.scan_scheduled_interviews()
+        candidates = flocareer.list_join_candidates()
+
+        assert [item.candidate_name for item in interviews] == [
+            "Candidate Alpha",
+            "Candidate Beta",
+        ]
+        assert [item.candidate_name for item in candidates] == [
+            "Candidate Alpha",
+            "Candidate Beta",
+        ]
+        browser.close()
