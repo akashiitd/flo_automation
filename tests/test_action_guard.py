@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from browser.action_guard import ActionGuard, BrowserAction, approval_token_for
 from browser.action_router import ActionRouter
 
@@ -111,6 +113,46 @@ def test_live_join_never_approves_hang_up_or_finish() -> None:
         assert decision.allowed is False
 
 
+def test_code_editor_show_requires_candidate_and_question_bound_approval() -> None:
+    guard = ActionGuard.code_editor()
+    candidate = "candidate-a1b2c3"
+    token = approval_token_for(
+        BrowserAction.SHOW_CODE_EDITOR_TO_CANDIDATE,
+        candidate,
+        question_id=13,
+    )
+
+    assert token == "APPROVE-SHOW-CODE-EDITOR candidate-a1b2c3 question-13"
+    assert guard.decide(BrowserAction.OPEN_CODE_EDITOR_TAB).allowed is True
+    assert (
+        guard.decide(
+            BrowserAction.SHOW_CODE_EDITOR_TO_CANDIDATE,
+            candidate_identifier=candidate,
+            question_id=13,
+            approval_token=token,
+        ).allowed
+        is True
+    )
+    assert (
+        guard.decide(
+            BrowserAction.SHOW_CODE_EDITOR_TO_CANDIDATE,
+            candidate_identifier=candidate,
+            question_id=12,
+            approval_token=token,
+        ).allowed
+        is False
+    )
+    assert (
+        guard.decide(
+            BrowserAction.SHOW_CODE_EDITOR_TO_CANDIDATE,
+            candidate_identifier="candidate-other",
+            question_id=13,
+            approval_token=token,
+        ).allowed
+        is False
+    )
+
+
 def test_router_does_not_write_approval_tokens_to_audit_log(tmp_path: Path) -> None:
     candidate = "candidate-a1b2c3"
     token = approval_token_for(BrowserAction.LAUNCH_INTERVIEW, candidate)
@@ -150,3 +192,24 @@ def test_router_consumes_a_live_approval_token_once(tmp_path: Path) -> None:
     assert first.allowed is True
     assert replay.allowed is False
     assert calls == ["launched"]
+
+
+def test_router_records_failed_action_execution(tmp_path: Path) -> None:
+    candidate = "candidate-a1b2c3"
+    token = approval_token_for(BrowserAction.LAUNCH_INTERVIEW, candidate)
+    log_path = tmp_path / "action_log.jsonl"
+    router = ActionRouter(ActionGuard.live_join(), log_path)
+
+    with pytest.raises(RuntimeError, match="simulated click failure"):
+        router.route(
+            BrowserAction.LAUNCH_INTERVIEW,
+            operation=lambda: (_ for _ in ()).throw(
+                RuntimeError("simulated click failure")
+            ),
+            candidate_identifier=candidate,
+            approval_token=token,
+        )
+
+    record = json.loads(log_path.read_text(encoding="utf-8"))
+    assert record["decision"] == "ALLOW"
+    assert record["execution_outcome"] == "ERROR"

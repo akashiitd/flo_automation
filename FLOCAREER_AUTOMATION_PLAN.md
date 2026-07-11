@@ -94,7 +94,7 @@ health warning.
 | 4. Browser dashboard scan | Complete | Persistent manual login, delayed-auth protection, loading protection, card/table extraction, screenshot, no launch action |
 | 5. Launch and join interview | Implemented; live Join validation pending | Live Launch reached the verified pre-call page; `--live` handles optional consent with its own approval and always requires separate Join approval; hang-up and FINISH remain blocked |
 | 6. Question extraction | Implemented; final multiline fix pending watched revalidation | `questions-scan` reached 17 sequential cards; supplied `.clFESingleSugDet` HTML and automated coverage now preserve multiline text; coding detection awaits the real coding-card fixture |
-| 7. Code editor automation | Not started | Coding-card HTML fixture pending; editor visibility must remain unchanged |
+| 7. Code editor automation | Guard/state workflow implemented; production click intentionally blocked | Exact question scoping, semantic tab navigation, SHOW/HIDE state reader, active-candidate plus candidate-and-question approval checks, stale-state revalidation, and fail-closed behavior have fixture coverage; real switch-parent HTML, selector binding, live-session integration, and watched validation remain pending |
 | 8. Offline session evaluation | Not started | Single-answer evaluator exists; session-level aggregation does not |
 | 9. LangGraph controller | Not started | Depends on browser, transcription, evaluator, timer seams |
 | 10. Feedback autofill | Not started | Must remain behind preview and approval gates |

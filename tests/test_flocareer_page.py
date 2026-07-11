@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from playwright.sync_api import sync_playwright
 
+from browser.code_editor_workflow import CodeEditorVisibility, CodeEditorWorkflowError
 from browser.flocareer_page import FloCareerPage
 from browser.join_workflow import JoinWorkflowError, PostLaunchState
 from browser.question_workflow import ExtractedQuestion
@@ -406,8 +407,11 @@ def test_extract_questions_expands_text_and_only_detects_code_editor() -> None:
             <section id="container-normal-2" class="clMainSingleFESug"
               style="width:700px; min-height:220px"><span>2</span>
               <button name="title">Implement an LRU cache.</button>
-              <div role="tab">Question</div><div role="tab">Code Editor</div>
-              <label><input type="checkbox">SHOW CODE EDITOR TO CANDIDATE</label>
+              <button role="tab">Question</button><button role="tab">Code Editor</button>
+              <div role="tabpanel"><div>Editor placeholder</div></div>
+              <label><input type="checkbox"><div class="clFloSwithTxt">
+                SHOW CODE EDITOR TO CANDIDATE
+              </div></label>
               <button>Bookmark in Video</button><button>Mark as</button>
               <textarea placeholder="Feedback *"></textarea><div>YOUR RATING</div>
             </section>
@@ -443,4 +447,176 @@ def test_extract_questions_expands_text_and_only_detects_code_editor() -> None:
             ),
         ]
         assert page.locator('input[type="checkbox"]').is_checked() is False
+        browser.close()
+
+
+def test_question_detection_requires_semantic_code_editor_tab() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section class="clMainSingleFESug" data-question-id="1">
+              <span>1</span><button name="title">Explain a Python iterator.</button>
+              <div>Code Editor</div>
+              <button>Bookmark in Video</button><button>Mark as</button>
+              <textarea></textarea><div>YOUR RATING</div>
+            </section>
+            """
+        )
+
+        questions = FloCareerPage(page).extract_questions()
+
+        assert len(questions) == 1
+        assert questions[0].has_code_editor is False
+        browser.close()
+
+
+def test_code_editor_actions_are_scoped_to_exact_question() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section id="container-normal-12" class="clMainSingleFESug">
+              <span class="question-number">12</span>
+              <button role="tab">Question</button>
+              <button role="tab" aria-selected="false"
+                onclick="this.setAttribute('aria-selected', 'true')">Code Editor</button>
+              <div class="editor-switch">
+                <input type="checkbox" role="switch"
+                  data-testid="candidate-editor-switch"
+                  onchange="this.nextElementSibling.textContent = this.checked
+                    ? 'HIDE CODE EDITOR TO CANDIDATE'
+                    : 'SHOW CODE EDITOR TO CANDIDATE'">
+                <div class="clFloSwithTxt">SHOW CODE EDITOR TO CANDIDATE</div>
+              </div>
+            </section>
+            <section id="container-normal-13" class="clMainSingleFESug">
+              <span class="question-number">13</span>
+              <button role="tab">Question</button>
+              <button role="tab" aria-selected="false"
+                onclick="this.setAttribute('aria-selected', 'true')">Code Editor</button>
+              <div class="editor-switch">
+                <input type="checkbox" role="switch"
+                  data-testid="candidate-editor-switch"
+                  onchange="this.nextElementSibling.textContent = this.checked
+                    ? 'HIDE CODE EDITOR TO CANDIDATE'
+                    : 'SHOW CODE EDITOR TO CANDIDATE'">
+                <div class="clFloSwithTxt">SHOW CODE EDITOR TO CANDIDATE</div>
+              </div>
+            </section>
+            """
+        )
+        flocareer = FloCareerPage(
+            page,
+            code_editor_switch_selector='[data-testid="candidate-editor-switch"]',
+        )
+
+        flocareer.open_code_editor_tab(13)
+        before = flocareer.read_code_editor_visibility(13)
+        flocareer.click_show_code_editor(13)
+        flocareer.wait_for_code_editor_visibility(
+            13,
+            CodeEditorVisibility.VISIBLE,
+        )
+
+        assert before is CodeEditorVisibility.HIDDEN
+        assert (
+            page.locator("#container-normal-13 [role='tab']")
+            .get_by_text("Code Editor", exact=True)
+            .get_attribute("aria-selected")
+            == "true"
+        )
+        assert page.locator("#container-normal-13 [role='switch']").is_checked()
+        assert not page.locator("#container-normal-12 [role='switch']").is_checked()
+        assert (
+            page.locator("#container-normal-12 [role='tab']")
+            .get_by_text("Code Editor", exact=True)
+            .get_attribute("aria-selected")
+            == "false"
+        )
+        browser.close()
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [
+        [],
+        ["SHOW CODE EDITOR TO CANDIDATE", "HIDE CODE EDITOR TO CANDIDATE"],
+        ["UNKNOWN CODE EDITOR STATE"],
+    ],
+)
+def test_code_editor_visibility_fails_closed_when_state_is_ambiguous(
+    labels: list[str],
+) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        label_html = "".join(
+            f'<div class="clFloSwithTxt">{label}</div>' for label in labels
+        )
+        page.set_content(
+            f"""
+            <section class="clMainSingleFESug"><span class="question-number">13</span>
+              <button role="tab">Code Editor</button>
+              {label_html}
+            </section>
+            """
+        )
+
+        with pytest.raises(CodeEditorWorkflowError, match="visibility state"):
+            FloCareerPage(page).read_code_editor_visibility(13)
+
+        browser.close()
+
+
+def test_code_editor_show_fails_closed_without_real_switch_contract() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section class="clMainSingleFESug"><span class="question-number">13</span>
+              <button role="tab">Code Editor</button>
+              <button onclick="window.guessedClick = true">Unlabelled visual toggle</button>
+              <div class="clFloSwithTxt">SHOW CODE EDITOR TO CANDIDATE</div>
+            </section>
+            """
+        )
+
+        with pytest.raises(CodeEditorWorkflowError, match="switch control contract"):
+            FloCareerPage(page).click_show_code_editor(13)
+
+        assert page.evaluate("Boolean(window.guessedClick)") is False
+        browser.close()
+
+
+def test_question_action_identity_ignores_unrelated_numeric_content() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section class="clMainSingleFESug">
+              <span class="question-number">12</span>
+              <p>Return exactly 13 records.</p><span>13</span>
+              <button role="tab">Code Editor</button>
+            </section>
+            <section class="clMainSingleFESug">
+              <span class="question-number">13</span>
+              <button role="tab" aria-selected="false">Code Editor</button>
+            </section>
+            """
+        )
+
+        FloCareerPage(page).open_code_editor_tab(13)
+
+        assert (
+            page.locator(".clMainSingleFESug")
+            .filter(has=page.locator(".question-number", has_text="13"))
+            .get_by_role("tab", name="Code Editor", exact=True)
+            .count()
+            == 1
+        )
         browser.close()

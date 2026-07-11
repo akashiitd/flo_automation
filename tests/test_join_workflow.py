@@ -36,6 +36,11 @@ class FakeJoinPage:
         self.consent_clicks = 0
         self.join_clicks = 0
         self.events: list[str] = []
+        self.candidate_identifier: str | None = None
+
+    def bind_candidate_identifier(self, candidate_identifier: str) -> None:
+        self.candidate_identifier = candidate_identifier
+        self.events.append("candidate_bound")
 
     def list_join_candidates(self) -> list[JoinCandidate]:
         return self.candidates
@@ -122,6 +127,7 @@ def test_dry_run_opens_only_the_exact_candidates_menu_and_blocks_launch(
 
     assert page.opened_tokens == ["beta-card"]
     assert page.launch_clicks == 0
+    assert page.candidate_identifier is None
     assert result.candidate_found_screenshot.name == "candidate_found.png"
     assert result.join_dry_run_screenshot.name == "join_dry_run.png"
     records = [
@@ -243,6 +249,7 @@ def test_live_join_requests_separate_approvals_and_joins_in_order(
         "pre_call_ready",
         "join_clicked",
         "interview_joined",
+        "candidate_bound",
     ]
     assert result.consent_screenshot is not None
     assert result.consent_screenshot.name == "consent.png"

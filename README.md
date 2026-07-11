@@ -26,7 +26,8 @@ The complete roadmap and safety constraints are documented in
 | Guarded candidate join discovery | Implemented and live-validated | `uv run python main.py join --candidate "Exact Name" --dry-run` |
 | Approved real Launch and Join | Implemented; live validation pending | `uv run python main.py join --candidate "Exact Name" --live` |
 | Approved normal-question extraction | Implemented; 17-card live scan completed, final multiline fix pending revalidation | `uv run python main.py questions-scan --candidate "Exact Name"` |
-| Coding-question detection | Pending real coding-card HTML fixture | — |
+| Coding-question detection | Implemented against semantic coding-card fixture; watched revalidation pending | — |
+| Guarded code-editor visibility | Guard/state workflow implemented; production click blocked pending real switch DOM | — |
 | Feedback fill and final submit | Not implemented | — |
 
 ## Safety model
@@ -280,6 +281,33 @@ questions.json
 screenshots/questions_expanded.png
 action_log.jsonl
 ```
+
+### 10. Guarded code-editor visibility module
+
+The isolated `browser/code_editor_workflow.py` guard/state module is implemented
+for later stitching into the persistent live-session controller. It requires
+the candidate binding established only after the exact-match joined-room
+transition succeeds, scopes navigation to one exact question-number element,
+opens one exact `Code Editor` tab, and interprets the visible state label
+conservatively:
+
+```text
+SHOW CODE EDITOR TO CANDIDATE -> currently hidden
+HIDE CODE EDITOR TO CANDIDATE -> currently visible; do not click
+```
+
+Showing a hidden editor requires a single-use approval bound to the candidate
+identifier and question ID. The state is revalidated after the operator pause,
+and the action passes only after the same card remains stably in the `HIDE...`
+state. Ambiguous cards, labels, tabs, or semantic switch controls fail closed.
+The module does not guess an unlabelled visual control, use coordinates, select
+a language, type code, click hang-up, or click `FINISH`.
+
+This is fixture-validated only. `FloCareerPage` intentionally has no default
+switch selector and refuses the candidate-visible click until the real scoped
+switch-parent `outerHTML` establishes that control contract. It is not exposed
+as a standalone CLI command: the real DOM binding, persistent Join-session
+integration, and a watched active interview are required before live use.
 
 ## Validation and development
 

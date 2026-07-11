@@ -26,6 +26,7 @@ class ActionRouter:
         *,
         operation: Callable[[], None] | None = None,
         candidate_identifier: str | None = None,
+        question_id: int | None = None,
         approval_token: str | None = None,
         screenshot_path: Path | None = None,
     ) -> ActionDecision:
@@ -37,17 +38,34 @@ class ActionRouter:
         decision = self._guard.decide(
             action,
             candidate_identifier=candidate_identifier,
+            question_id=question_id,
             approval_token=unused_approval,
-        )
-        self._append_record(
-            decision,
-            candidate_identifier=candidate_identifier,
-            screenshot_path=screenshot_path,
         )
         if decision.allowed and approval_token is not None:
             self._consumed_approval_tokens.add(approval_token)
+        execution_outcome = "NOT_RUN"
         if decision.allowed and operation is not None:
-            operation()
+            try:
+                operation()
+            except Exception:
+                self._append_record(
+                    decision,
+                    candidate_identifier=candidate_identifier,
+                    question_id=question_id,
+                    screenshot_path=screenshot_path,
+                    execution_outcome="ERROR",
+                )
+                raise
+            execution_outcome = "SUCCEEDED"
+        elif decision.allowed:
+            execution_outcome = "NO_OPERATION"
+        self._append_record(
+            decision,
+            candidate_identifier=candidate_identifier,
+            question_id=question_id,
+            screenshot_path=screenshot_path,
+            execution_outcome=execution_outcome,
+        )
         return decision
 
     def _append_record(
@@ -55,7 +73,9 @@ class ActionRouter:
         decision: ActionDecision,
         *,
         candidate_identifier: str | None,
+        question_id: int | None,
         screenshot_path: Path | None,
+        execution_outcome: str,
     ) -> None:
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         record = {
@@ -64,6 +84,8 @@ class ActionRouter:
             "decision": "ALLOW" if decision.allowed else "BLOCK",
             "reason": decision.reason,
             "candidate_identifier": candidate_identifier,
+            "question_id": question_id,
+            "execution_outcome": execution_outcome,
             "screenshot_path": str(screenshot_path) if screenshot_path else None,
         }
         with self._log_path.open("a", encoding="utf-8") as handle:

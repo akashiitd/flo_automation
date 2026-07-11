@@ -83,6 +83,8 @@ class LaunchWorkflowPage(Protocol):
 
 
 class JoinWorkflowPage(LaunchWorkflowPage, Protocol):
+    def bind_candidate_identifier(self, candidate_identifier: str) -> None: ...
+
     def wait_for_consent_form(self) -> None: ...
 
     def wait_for_consent_or_pre_call(self) -> PostLaunchState: ...
@@ -340,6 +342,7 @@ def run_join_live(
         diagnostic = page.capture_screenshot(screenshots_dir, "join_result_error")
         detail = str(error) or type(error).__name__
         raise JoinWorkflowError(f"{detail}. Screenshot: {diagnostic}") from error
+    page.bind_candidate_identifier(identifier)
     joined = page.capture_screenshot(screenshots_dir, "joined")
     return JoinLiveResult(
         candidate_identifier=identifier,

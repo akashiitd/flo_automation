@@ -12,6 +12,10 @@ from typing import Literal
 
 from playwright.sync_api import Locator, Page
 
+from browser.code_editor_workflow import (
+    CodeEditorVisibility,
+    CodeEditorWorkflowError,
+)
 from browser.join_workflow import (
     CandidateCardHandle,
     JoinCandidate,
@@ -147,13 +151,28 @@ def parse_scheduled_interviews_text(text: str) -> list[ScheduledInterview]:
 class FloCareerPage:
     """Expose dashboard reads and candidate-scoped reversible menu actions."""
 
-    def __init__(self, page: Page) -> None:
+    def __init__(
+        self,
+        page: Page,
+        *,
+        code_editor_switch_selector: str | None = None,
+    ) -> None:
         self.page = page
+        self._code_editor_switch_selector = code_editor_switch_selector
+        self._active_candidate_identifier: str | None = None
         self._candidate_cards: dict[CandidateCardHandle, Locator] = {}
         self._active_candidate_menu: Locator | None = None
         self._active_consent_dialog: Locator | None = None
         self._launch_source_page: Page | None = None
         self._pages_before_launch: tuple[Page, ...] = ()
+
+    def bind_candidate_identifier(self, candidate_identifier: str) -> None:
+        if not candidate_identifier.strip():
+            raise ValueError("candidate identifier is required")
+        self._active_candidate_identifier = candidate_identifier
+
+    def active_candidate_matches(self, candidate_identifier: str) -> bool:
+        return self._active_candidate_identifier == candidate_identifier
 
     def open_dashboard(self, url: str) -> None:
         self.page.goto(url, wait_until="domcontentloaded")
@@ -621,8 +640,14 @@ class FloCareerPage:
                   [...root.querySelectorAll('*')]
                     .map(node => (node.textContent || '').trim())
                     .find(text => /^\d{1,3}$/.test(text)),
-                has_code_editor: [...root.querySelectorAll('[role="tab"], button, div')]
+                has_code_editor: [...root.querySelectorAll('[role="tab"]')]
                   .some(node => (node.textContent || '').trim() === 'Code Editor'),
+                title_text: (() => {
+                  const title = root.querySelector(
+                    '.question-title, [data-testid="question-title"], [name="title"]'
+                  );
+                  return title ? (title.innerText || '').trim() : '';
+                })(),
                 expanded_question_text: (() => {
                   const detail = root.querySelector(
                     '.MuiCollapse-entered .clFESingleSugDet, '
@@ -735,6 +760,9 @@ class FloCareerPage:
             )
         ]
         question_text = max(candidates, key=len, default="")
+        title_text = str(snapshot.get("title_text") or "").strip()
+        if title_text:
+            question_text = title_text
         expanded_text = str(snapshot.get("expanded_question_text") or "").strip()
         if expanded_text:
             question_text = "\n".join(
@@ -780,6 +808,128 @@ class FloCareerPage:
         snapshots = self._question_card_snapshots(self.page, expand=True)
         questions = [self._parse_question_snapshot(snapshot) for snapshot in snapshots]
         return sorted(questions, key=lambda question: question.id)
+
+    def _question_root(self, question_id: int) -> Locator:
+        if question_id < 1:
+            raise CodeEditorWorkflowError("question id must be positive")
+        roots = self.page.locator(
+            '[data-question-id], [data-testid="question-card"], .question-card, '
+            '.clMainSingleFESug[id^="container-"], .clMainSingleFESug'
+        )
+        matches: list[Locator] = []
+        for index in range(roots.count()):
+            root = roots.nth(index)
+            if not root.is_visible():
+                continue
+            if root.get_attribute("data-question-id") == str(question_id):
+                matches.append(root)
+                continue
+            number = root.locator(
+                "[data-question-number], .question-number"
+            ).get_by_text(str(question_id), exact=True)
+            if any(
+                number.nth(number_index).is_visible()
+                for number_index in range(number.count())
+            ):
+                matches.append(root)
+        if len(matches) != 1:
+            raise CodeEditorWorkflowError(
+                f"Expected one visible question card for question {question_id}; "
+                f"found {len(matches)}"
+            )
+        return matches[0]
+
+    @staticmethod
+    def _visible_locators(locator: Locator) -> list[Locator]:
+        return [
+            locator.nth(index)
+            for index in range(locator.count())
+            if locator.nth(index).is_visible()
+        ]
+
+    def open_code_editor_tab(self, question_id: int) -> None:
+        root = self._question_root(question_id)
+        tabs = self._visible_locators(
+            root.get_by_role("tab", name="Code Editor", exact=True)
+        )
+        if len(tabs) != 1:
+            raise CodeEditorWorkflowError(
+                f"Expected one Code Editor tab in question {question_id}; "
+                f"found {len(tabs)}"
+            )
+        root.scroll_into_view_if_needed()
+        if tabs[0].get_attribute("aria-selected") != "true":
+            tabs[0].click()
+
+    def _code_editor_state_label(self, question_id: int) -> Locator:
+        root = self._question_root(question_id)
+        labels = self._visible_locators(root.locator(".clFloSwithTxt"))
+        if len(labels) != 1:
+            raise CodeEditorWorkflowError(
+                f"Code editor visibility state is ambiguous for question "
+                f"{question_id}: found {len(labels)} visible state labels"
+            )
+        return labels[0]
+
+    def read_code_editor_visibility(self, question_id: int) -> CodeEditorVisibility:
+        value = _clean_text(self._code_editor_state_label(question_id).inner_text())
+        if value == "SHOW CODE EDITOR TO CANDIDATE":
+            return CodeEditorVisibility.HIDDEN
+        if value == "HIDE CODE EDITOR TO CANDIDATE":
+            return CodeEditorVisibility.VISIBLE
+        raise CodeEditorWorkflowError(
+            f"Code editor visibility state is ambiguous for question {question_id}"
+        )
+
+    def click_show_code_editor(self, question_id: int) -> None:
+        if (
+            self.read_code_editor_visibility(question_id)
+            is not CodeEditorVisibility.HIDDEN
+        ):
+            raise CodeEditorWorkflowError(
+                f"Code editor for question {question_id} is no longer hidden"
+            )
+        if self._code_editor_switch_selector is None:
+            raise CodeEditorWorkflowError(
+                "The real code-editor switch control contract is unavailable; "
+                "no click was attempted"
+            )
+        root = self._question_root(question_id)
+        controls = self._visible_locators(
+            root.locator(self._code_editor_switch_selector)
+        )
+        if len(controls) != 1:
+            raise CodeEditorWorkflowError(
+                f"Expected one contracted switch for question {question_id}; "
+                f"found {len(controls)}"
+            )
+        controls[0].click()
+
+    def wait_for_code_editor_visibility(
+        self,
+        question_id: int,
+        expected: CodeEditorVisibility,
+        *,
+        timeout_seconds: float = 5,
+    ) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        stable_polls = 0
+        while time.monotonic() < deadline:
+            try:
+                matches = self.read_code_editor_visibility(question_id) is expected
+            except CodeEditorWorkflowError:
+                matches = False
+            if matches:
+                stable_polls += 1
+                if stable_polls >= 3:
+                    return
+            else:
+                stable_polls = 0
+            self.page.wait_for_timeout(100)
+        raise CodeEditorWorkflowError(
+            f"Code editor for question {question_id} did not stabilize as "
+            f"{expected.value}"
+        )
 
     def wait_for_pre_call_page(self, *, timeout_seconds: float = 30) -> None:
         deadline = time.monotonic() + timeout_seconds
