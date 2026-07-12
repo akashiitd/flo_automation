@@ -126,6 +126,42 @@ def test_job_description_extraction_opens_only_the_job_description_tab() -> None
     )
 
 
+def test_job_description_extraction_matches_captured_flocareer_tab_markup() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <!doctype html>
+            <ul>
+              <li id="liJd" tabid="divTabMainJD" aria-label="Job Description">
+                Job Description
+              </li>
+            </ul>
+            <div id="divTabMainJD" style="display: none;">
+              <div class="clTabHed">JOB DESCRIPTION</div>
+              <div id="divJDContainer">
+                <div>Senior GenAI Engineer</div>
+                <div>Build RAG pipelines, embeddings, and vector databases.</div>
+              </div>
+            </div>
+            <script>
+              document.querySelector('#liJd').onclick = () => {
+                const panel = document.querySelector('#divTabMainJD');
+                panel.style.display = 'block';
+              };
+            </script>
+            """
+        )
+
+        description = FloCareerPage(page).extract_job_description()
+        browser.close()
+
+    assert description == (
+        "Senior GenAI Engineer\nBuild RAG pipelines, embeddings, and vector databases."
+    )
+
+
 def test_dashboard_scan_extracts_rows_without_clicking_actions() -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)

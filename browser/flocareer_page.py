@@ -881,7 +881,7 @@ class FloCareerPage:
         container = self.page.locator("#divJDContainer")
         visible = self._visible_locators(container)
         if not visible:
-            tab = self.page.locator("#liJD")
+            tab = self.page.locator('li[aria-label="Job Description"], #liJD, #liJd')
             tabs = self._visible_locators(tab)
             if len(tabs) != 1:
                 raise JoinWorkflowError(
