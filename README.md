@@ -24,6 +24,9 @@ The complete roadmap and safety constraints are documented in
 | Apple Speech system-audio capture | Implemented | `uv run python main.py listen-test --seconds 60` |
 | Persistent local cloned voice service | Implemented | `uv run python main.py qwen-tts-test --text "..."` |
 | Local LM Studio → Qwen speech bridge | Implemented | `uv run python main.py llm-speak-test --prompt "..."` |
+| Streamed Qwen PCM generation | Implemented and live-validated | `uv run python main.py qwen-tts-stream-test --text "..."` |
+| Live call audio routing / candidate-only capture | Not implemented | — |
+| Interview turn controller and barge-in | Not implemented | — |
 | Read-only FloCareer dashboard scan | Implemented | `uv run python main.py browser-scan` |
 | Guarded candidate join discovery | Implemented and live-validated | `uv run python main.py join --candidate "Exact Name" --dry-run` |
 | Approved real Launch, Join, and candidate wait | Implemented; live validation pending | `uv run python main.py join --candidate "Exact Name" --live` |
@@ -488,12 +491,21 @@ empty or loading shell as a pass.
 
 The next guarded milestones are:
 
-1. Candidate lookup and join workflow with a strict `--dry-run` mode.
-2. Question and rubric extraction.
-3. Code-editor visibility control.
-4. Offline full-session evaluation.
-5. Stateful interview orchestration and timer events.
-6. Human-approved feedback autofill.
-7. Optional Supertonic voice integration after text-only stability.
+1. Revalidate the guarded Join, question scan, and code-editor flow while a
+   human watches a scheduled interview.
+2. Build a local audio-output adapter that plays Qwen PCM as it arrives and
+   routes it to a deliberately selected virtual microphone for the call.
+3. Build a separate candidate-only loopback input for Apple Speech, so Qwen's
+   own voice is not transcribed as a candidate answer.
+4. Add a stateful interview controller: introduction, ordered questions,
+   candidate turn, transcript, rubric evaluation, follow-up, and next question.
+5. Add pause/cancel behaviour when the candidate starts speaking, then test
+   this full-duplex behaviour in a real call.
+6. Add timer and full-session evaluation, followed by human-approved feedback
+   preview/autofill.
+
+The detailed next-session handoff is stored outside Git at
+`/private/tmp/FLOCAREER_NEXT_SESSION_HANDOFF.md`. Qwen is the cloned-voice
+runtime. Supertonic is optional and is not required for the current plan.
 
 Final submission remains outside unattended automation.

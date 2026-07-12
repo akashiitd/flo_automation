@@ -34,10 +34,9 @@ sections below it remain the detailed target specification. When this status
 section and a later milestone section disagree about what is already built,
 this status section is authoritative.
 
-The later sections titled "Supertonic" describe an earlier voice-engine option.
-For cloned voice, use the implemented loopback-only Qwen3-TTS worker and its
-LM Studio sentence bridge instead. The routing, consent, and echo-suppression
-constraints in those later sections still apply.
+The former Supertonic section below has been replaced with the implemented
+Qwen3-TTS approach. The routing, consent, and echo-suppression constraints
+apply equally to the cloned-voice runtime.
 
 ### Repository and operating baseline
 
@@ -109,6 +108,42 @@ FloCareer audio routing and barge-in remain unimplemented.
 | 11. Interview timer | Not started | Pure timer tests can be developed before live integration |
 | 12. Local dashboard | Not started | Depends on stable backend operations |
 | 13. Qwen cloned live voice | Local service and LM bridge complete; room audio pending | Persistent local Qwen worker, private reference voice, health probe, text-to-WAV and streamed-PCM clients, and sentence-streaming LM bridge are live-validated; browser audio injection, source separation, live PCM playback, and barge-in remain pending |
+
+### Next-session execution plan
+
+The immediate goal is **not** to make an unattended interviewer. It is to
+connect the already working local components into a supervised, testable voice
+loop with clear audio boundaries.
+
+1. **Verify the existing local voice path.** Start LM Studio with
+   `ornith-1.0-35b`, start the private loopback-only Qwen worker, then run
+   `qwen-tts-stream-test` and `llm-speak-stream-test`. Confirm Qwen produces
+   first PCM in roughly half a second after it receives a complete sentence.
+2. **Implement a local PCM playback adapter.** Consume the existing
+   `iter_provider_pcm` stream and play chunks as they arrive. Keep a file/WAV
+   capture mode for inspection and tests.
+3. **Design and validate explicit audio buses.** Route only Qwen output to a
+   selected virtual microphone for the call, and route only candidate audio to
+   Apple Speech. Do not use undifferentiated system audio for both directions;
+   it causes Qwen echo/transcription feedback. Virtual-device installation and
+   device selection are manual, user-approved setup steps.
+4. **Add the supervised interview controller.** Build the sequence
+   `introduction → ordered question → candidate turn → transcript → rubric
+   evaluation → optional follow-up → next question`. Derive the introduction,
+   topics, questions, and scoring criteria from the extracted question/rubric
+   data. Preserve a human approval boundary for candidate-visible browser
+   actions and feedback.
+5. **Add barge-in and recovery.** When candidate-only speech begins, stop or
+   cancel outstanding Qwen playback, retain the turn state, and continue from
+   a safe boundary. Validate this in a real call before enabling it by default.
+6. **Only then add session aggregation, timer, and feedback preview.** Keep
+   feedback submission and `FINISH` outside automation.
+
+For a clean continuation, see the private temporary handoff file:
+
+```text
+/private/tmp/FLOCAREER_NEXT_SESSION_HANDOFF.md
+```
 
 ### What is implemented now
 
@@ -423,7 +458,7 @@ this order and validate before advancing:
    `FINISH` behind a separate final approval.
 8. **Local dashboard:** expose already-tested backend actions without moving
    safety policy into UI button handlers.
-9. **Supertonic:** test service/voice quality independently, then click-to-speak,
+9. **Qwen cloned voice:** test the local worker/voice quality independently, then click-to-speak,
    then interruptible duplex routing; never build a hidden clone mode.
 
 ### Required human inputs in later sessions
@@ -555,16 +590,15 @@ Browserbase = paid cloud browser, not needed for v1
 
 ### TTS / voice output choice
 
-Test Supertonic independently early, then connect it to the live interview only
-after browser control, transcription, and answer evaluation are reliable.
+Use the implemented local Qwen3-TTS loopback worker for cloned voice. Validate
+its streamed PCM output independently, then connect it to a supervised call
+only after browser control, candidate-only transcription, and answer evaluation
+are reliable.
 
-Supertonic can run its own local HTTP server, so we do not need to build a
-custom FastAPI TTS endpoint immediately.
-
-Expected Supertonic local server:
+Expected Qwen local server:
 
 ```text
-http://127.0.0.1:7788
+http://127.0.0.1:7789
 ```
 
 ---
@@ -588,9 +622,9 @@ LangGraph interview controller
     |       +-> OpenRouter fallback after PII redaction
     |       +-> Structured score, follow-up, feedback, and confidence
     |
-    +-> Supertonic
-    |       +-> Approved question/follow-up converted to custom-voice audio
-    |       +-> Audio queue sends output to the virtual microphone
+    +-> Qwen3-TTS
+    |       +-> Approved question/follow-up converted to cloned-voice PCM
+    |       +-> Audio queue sends output to the selected virtual microphone
     |
     +-> Human approval
             +-> Review final recommendation and evidence
@@ -600,25 +634,25 @@ LangGraph interview controller
 
 ### Runtime conversation loop
 
-Supertonic is the text-to-speech layer. It does not decide what to ask. The LLM
-and LangGraph decide the next text; Supertonic turns that text into audio using
-the configured custom voice style.
+Qwen3-TTS is the text-to-speech layer. It does not decide what to ask. The LLM
+and LangGraph decide the next text; Qwen turns that text into streamed PCM
+using the authorised private reference voice.
 
 ```text
 1. Preflight
    -> Start LM Studio and configure OpenRouter fallback
    -> Start Apple Speech system-audio listener
-   -> Start Supertonic and load interviewer_voice.json
+   -> Start the local Qwen worker with the private reference configuration
    -> Start Playwright and join FloCareer
    -> Pre-generate the greeting and standard questions
 
 2. Greeting
    -> LangGraph selects the approved introduction text
-   -> Supertonic synthesizes it in the custom voice
+   -> Qwen synthesizes it as streamed cloned-voice PCM
    -> Audio queue plays it through the virtual microphone into FloCareer
 
 3. Candidate introduction
-   -> Supertonic asks the candidate to introduce themselves
+   -> Qwen asks the candidate to introduce themselves
    -> State changes from AI_SPEAKING to LISTENING
    -> Apple Speech captures candidate/system audio
    -> Final transcript segments are appended to the current answer buffer
@@ -634,20 +668,20 @@ the configured custom voice style.
    -> LLM returns structured output:
       assessment, score_draft, follow_up_needed, next_spoken_text
    -> LangGraph either chooses one follow-up or advances to the next question
-   -> Supertonic converts next_spoken_text into the custom voice
+   -> Qwen converts next_spoken_text into cloned-voice PCM
    -> Audio is played through the virtual microphone
    -> Loop returns to LISTENING
 
 6. Coding question
    -> Browser action router opens the code editor and selects the language
-   -> Supertonic reads the coding question and instructions
+   -> Qwen reads the coding question and instructions
    -> Apple Speech captures the candidate's explanation
    -> Browser controller records editor state/code where technically available
    -> LLM evaluates explanation, approach, correctness, and complexity
 
 7. Closing
-   -> Supertonic asks whether the candidate has questions
-   -> Supertonic plays the approved closing statement
+   -> Qwen asks whether the candidate has questions
+   -> Qwen plays the approved closing statement
    -> LangGraph creates per-question feedback and final recommendation
    -> Human reviews evidence and approves feedback/FINISH
 ```
@@ -667,7 +701,7 @@ STOPPED
 ```
 
 While `AI_SPEAKING` or `TTS_GENERATING` is active, the system must not treat the
-generated voice as a candidate answer. Route Supertonic directly to a virtual
+generated voice as a candidate answer. Route Qwen directly to a virtual
 microphone, use headphones, and suppress transcript segments that match the
 known generated text. If the candidate starts speaking, stop the TTS audio and
 return to `LISTENING`.
@@ -735,7 +769,9 @@ Create this structure under:
 │   └── timer.py
 ├── tts/
 │   ├── __init__.py
-│   ├── supertonic_client.py
+│   ├── qwen_service.py
+│   ├── qwen_client.py
+│   ├── speech_bridge.py
 │   └── audio_output.py
 ├── ui/
 │   ├── __init__.py
@@ -793,9 +829,8 @@ BROWSER_HEADLESS=false
 BROWSER_USER_DATA_DIR=.browser-profile
 FLOCAREER_URL=https://app.flocareer.com/
 
-# Optional Supertonic
-SUPERTONIC_BASE_URL=http://127.0.0.1:7788
-SUPERTONIC_VOICE=interviewer_voice
+# Local Qwen cloned voice (private reference paths are configured locally)
+QWEN_TTS_BASE_URL=http://127.0.0.1:7789
 
 # Runtime
 RUNS_DIR=runs
@@ -840,7 +875,7 @@ Build a single command that checks whether the local environment is ready.
 - Playwright is installed.
 - Browser can launch.
 - `runs/` is writable.
-- Supertonic is optional and reported as available/unavailable.
+- Qwen is optional and reported as available/unavailable.
 
 ### Command
 
@@ -861,7 +896,7 @@ Health check
 [OK] LLM primary provider: lmstudio
 [WARN] OpenRouter fallback disabled because cloud candidate data is not allowed
 [OK] Playwright browser launch
-[WARN] Supertonic not running
+[WARN] Qwen TTS worker not running
 
 Overall: READY_FOR_BROWSER_SCAN
 ```
@@ -1625,95 +1660,65 @@ uv run python main.py ui
 
 ---
 
-## 16. Milestone 13: Supertonic Live Interview Voice Integration
+## 16. Milestone 13: Qwen Cloned Voice and Live Audio Routing
 
 ### Objective
 
-Connect the already-tested Supertonic service to the live LangGraph interview
-loop so it speaks the introduction, questions, follow-ups, coding instructions,
-time notices, and closing statement in the configured custom voice.
+Use the implemented local Qwen3-TTS worker as the interviewer voice for the
+introduction, questions, follow-ups, coding instructions, time notices, and
+closing statement. The worker conditions each request on the private,
+authorised reference recording and exact reference transcript; it is not a
+permanent fine-tune.
 
-### Why postpone this
-
-Voice introduces:
-
-- Latency.
-- Audio routing complexity.
-- Feedback loops.
-- Consent/platform policy risk.
-- More live failure modes.
-
-The isolated Supertonic health and voice-quality tests happen early. This
-milestone is postponed only for full duplex audio routing and live turn-taking,
-which should be connected after browser, transcript, and LLM response tests are
-stable.
-
-### Install
-
-```bash
-python -m venv .venv-supertonic
-source .venv-supertonic/bin/activate
-pip install 'supertonic[serve]'
-```
-
-### Start server
-
-```bash
-supertonic serve --host 127.0.0.1 --port 7788
-```
-
-### Import voice
-
-If using a custom voice from Supertonic Voice Builder:
-
-```bash
-curl -X POST http://127.0.0.1:7788/v1/styles/import \
-  -F "file=@voices/interviewer_voice.json"
-```
-
-### Generate WAV
-
-```bash
-curl -X POST http://127.0.0.1:7788/v1/tts \
-  -H 'content-type: application/json' \
-  -d '{"text":"Let us move to the coding question.","voice":"interviewer_voice","lang":"en"}' \
-  -o runs/tts_test.wav
-```
-
-### Test command
-
-```bash
-uv run python main.py tts-test --text "Let us move to the coding question."
-```
-
-### Pass criteria
-
-- WAV file is generated.
-- Audio sounds acceptable.
-- Latency is measured.
-- Standard scripts are pre-generated successfully.
-- Dynamic follow-up text can be synthesized within the latency target.
-- Audio can be interrupted when candidate speech begins.
-- Generated speech is not added to the candidate transcript.
-- Voice use follows the configured approval/disclosure policy.
-
-### Later virtual microphone
-
-To send TTS into FloCareer:
+### Implemented voice path
 
 ```text
-Supertonic WAV/audio stream -> virtual audio device -> Chrome microphone input
+Ornith in LM Studio → completed sentence → local Qwen worker → PCM chunks
 ```
 
-Possible virtual audio tools:
+The Qwen worker binds only to `127.0.0.1` and exposes complete-WAV and
+streamed-PCM endpoints. A streaming test has measured first Qwen PCM at about
+half a second after receiving a complete sentence. The end-to-end first-audio
+time also includes the time Ornith needs to produce its first sentence.
+
+### Verify before any call integration
+
+```bash
+uv run python main.py health
+uv run python main.py qwen-tts-stream-test \
+  --text "Please explain your approach."
+uv run python main.py llm-speak-stream-test \
+  --prompt "Ask one concise Python question." --model-class fast
+```
+
+The current commands assemble the received PCM into a private WAV artifact for
+listening and verification. They do not inject audio into FloCareer.
+
+### Required live-audio architecture
 
 ```text
-BlackHole
-Loopback
-VB-Cable equivalent for macOS
+Qwen PCM → local playback adapter → INTERVIEWER_TO_CALL virtual microphone
+candidate call audio → CANDIDATE_ONLY virtual loopback → Apple Speech
 ```
 
-Do not enable this until text-only mode is stable.
+The two directions must remain separate. If Apple Speech receives the Qwen
+output, it can transcribe the interviewer as the candidate and cause false
+follow-ups. If the call microphone receives candidate/system audio, it can
+create feedback. Installation and selection of a virtual audio device (for
+example BlackHole or Loopback) are manual user-approved macOS setup steps.
+
+### Pass criteria for live routing
+
+- Qwen PCM is heard by the candidate through the selected call microphone.
+- Apple Speech records candidate-only audio and no Qwen output.
+- A local recording/WAV is available for troubleshooting without exposing it
+  to Git.
+- Starting candidate speech stops or cancels current Qwen playback.
+- A failed device, unavailable stream, or ambiguous route fails closed and
+  leaves the human able to continue the interview.
+- Voice use follows required disclosure, consent, and platform policy.
+
+Do not enable live audio injection until these tests pass in a supervised call.
 
 ---
 
@@ -1733,7 +1738,7 @@ Use this first.
 ```text
 Tool suggests next question.
 User clicks Speak.
-Supertonic speaks through selected output.
+Qwen speaks through the selected output.
 ```
 
 Use after v1.
@@ -1765,7 +1770,7 @@ Browser automation: local/free
 Transcription: local/free using existing app
 LLM primary: LM Studio local/free
 LLM fallback: OpenRouter only on timeout, invalid output, or low confidence
-Voice: local Supertonic later
+Voice: local Qwen3-TTS with supervised routing later
 ```
 
 Record LLM usage per interview in:
@@ -1844,7 +1849,7 @@ PLANNED AFTER JOIN DRY-RUN
 13. uv run python main.py timer-demo --minutes 1
 14. uv run python main.py fill-feedback --session runs/test_session
 15. uv run python main.py ui
-16. uv run python main.py tts-test --text "Hello, let us start."
+16. uv run python main.py qwen-tts-stream-test --text "Hello, let us start."
 ```
 
 Do not move to the next test until the current one passes.
@@ -2104,7 +2109,7 @@ Use this prompt in another session:
 Continue the supervised FloCareer interview copilot in:
 https://github.com/akashiitd/flo_automation
 
-First read README.md and the "Current Implementation Status (2026-07-11)"
+First read README.md and the "Current Implementation Status (2026-07-12)"
 section at the top of FLOCAREER_AUTOMATION_PLAN.md. Inspect git status and the
 latest commits before editing.
 
