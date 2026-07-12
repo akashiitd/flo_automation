@@ -200,6 +200,7 @@ Verify the worker and synthesize supplied text:
 ```bash
 uv run python main.py health
 uv run python main.py qwen-tts-test --text "Please explain your approach."
+uv run python main.py qwen-tts-stream-test --text "Please explain your approach."
 ```
 
 The returned WAV is saved under `runs/qwen_tts_<timestamp>/`. The service
@@ -224,6 +225,21 @@ On the current Mac, a warm one-sentence smoke test completed in about 17
 seconds end-to-end for 8.24 seconds of generated speech. The first request
 after starting either service can take longer. This bridge creates audio only;
 routing it into FloCareer and handling candidate barge-in remain separate work.
+
+For low-latency playback, use the PCM streaming commands instead. Qwen emits
+small audio chunks while it is still synthesizing the sentence:
+
+```bash
+uv run python main.py qwen-tts-stream-test --text "Please explain your approach."
+uv run python main.py llm-speak-stream-test \
+  --prompt "Ask one concise Python question." --model-class fast
+```
+
+On the current Mac, Qwen emitted its first PCM chunk in about 0.5 seconds after
+it received a sentence. A local Ornith → Qwen smoke test reached first audio in
+about 15 seconds, dominated by Ornith reaching its first sentence boundary.
+The commands also assemble a WAV artifact for inspection; a future audio player
+or virtual-microphone route can play the PCM chunks as they arrive.
 
 ### 7. Test Apple Speech system audio
 

@@ -10,8 +10,9 @@ import os
 import sys
 import tempfile
 import time
-from collections.abc import Mapping, Sequence
-from dataclasses import replace
+import wave
+from collections.abc import AsyncIterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import cast
@@ -41,7 +42,8 @@ from llm.schemas import (
 from llm.usage_tracker import UsageTracker
 from transcriber.apple_speech_adapter import AppleSpeechAdapter
 from tts.qwen_client import QwenTTSClient, QwenTTSError
-from tts.speech_bridge import iter_provider_speech
+from tts.schemas import SpeechPCMChunk
+from tts.speech_bridge import iter_provider_pcm, iter_provider_speech
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -262,6 +264,68 @@ async def _qwen_tts_test(settings: Settings, *, text: str) -> int:
     return 0
 
 
+def _write_pcm_wav(path: Path, *, pcm: bytes, sample_rate: int) -> None:
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(pcm)
+
+
+@dataclass(frozen=True, slots=True)
+class PCMStreamResult:
+    pcm: bytes
+    sample_rate: int
+    first_audio_ms: int
+
+
+async def _collect_pcm_stream(
+    audio_stream: AsyncIterable[SpeechPCMChunk],
+) -> PCMStreamResult:
+    started = time.perf_counter()
+    first_audio_ms: int | None = None
+    sample_rate: int | None = None
+    chunks: list[bytes] = []
+    async for audio in audio_stream:
+        if sample_rate is None:
+            sample_rate = audio.sample_rate
+            first_audio_ms = round((time.perf_counter() - started) * 1000)
+        elif audio.sample_rate != sample_rate:
+            raise QwenTTSError("Qwen speech stream changed sample rates")
+        chunks.append(audio.audio)
+    if sample_rate is None or first_audio_ms is None or not chunks:
+        raise QwenTTSError("Qwen streaming TTS test returned no audio")
+    return PCMStreamResult(
+        pcm=b"".join(chunks),
+        sample_rate=sample_rate,
+        first_audio_ms=first_audio_ms,
+    )
+
+
+async def _qwen_tts_stream_test(settings: Settings, *, text: str) -> int:
+    session_dir = (
+        settings.runs_dir
+        / f"qwen_tts_stream_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
+    session_dir.mkdir(parents=True, exist_ok=True)
+    client = QwenTTSClient(
+        settings.qwen_tts_base_url,
+        timeout_seconds=settings.qwen_tts_timeout_seconds,
+    )
+    try:
+        stream = await _collect_pcm_stream(client.stream_synthesize(text))
+    except (QwenTTSError, ValueError) as error:
+        print(f"Qwen streaming TTS test failed: {error}", file=sys.stderr)
+        return 1
+    finally:
+        await client.aclose()
+    audio_path = session_dir / "speech.wav"
+    _write_pcm_wav(audio_path, pcm=stream.pcm, sample_rate=stream.sample_rate)
+    print(f"Audio WAV: {audio_path}")
+    print(f"Time to first audio: {stream.first_audio_ms}ms")
+    return 0
+
+
 async def _llm_speak_test(
     settings: Settings, *, prompt: str, model_class: ModelClass
 ) -> int:
@@ -303,6 +367,51 @@ async def _llm_speak_test(
 
     print(f"Generated speech chunks: {audio_count}")
     print(f"Output directory: {session_dir}")
+    return 0
+
+
+async def _llm_speak_stream_test(
+    settings: Settings, *, prompt: str, model_class: ModelClass
+) -> int:
+    session_dir = (
+        settings.runs_dir
+        / f"llm_speak_stream_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
+    session_dir.mkdir(parents=True, exist_ok=True)
+    provider = LMStudioProvider(settings)
+    speech_client = QwenTTSClient(
+        settings.qwen_tts_base_url,
+        timeout_seconds=settings.qwen_tts_timeout_seconds,
+    )
+    try:
+        stream = await _collect_pcm_stream(
+            iter_provider_pcm(
+                provider.stream_text(
+                    (
+                        {
+                            "role": "system",
+                            "content": (
+                                "Reply with concise spoken interview text only. "
+                                "Use at most two complete sentences."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ),
+                    model_class,
+                ),
+                speech_client,
+            )
+        )
+    except (QwenTTSError, ValueError, TimeoutError) as error:
+        print(f"LM Studio to Qwen streaming test failed: {error}", file=sys.stderr)
+        return 1
+    finally:
+        await provider.aclose()
+        await speech_client.aclose()
+    audio_path = session_dir / "speech.wav"
+    _write_pcm_wav(audio_path, pcm=stream.pcm, sample_rate=stream.sample_rate)
+    print(f"Audio WAV: {audio_path}")
+    print(f"Time to first audio: {stream.first_audio_ms}ms")
     return 0
 
 
@@ -693,12 +802,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="send supplied text to the local Qwen cloned-voice service",
     )
     qwen_tts_test.add_argument("--text", required=True)
+    qwen_tts_stream_test = subcommands.add_parser(
+        "qwen-tts-stream-test",
+        help="stream PCM from the local Qwen cloned-voice service",
+    )
+    qwen_tts_stream_test.add_argument("--text", required=True)
     llm_speak_test = subcommands.add_parser(
         "llm-speak-test",
         help="stream a short local LM Studio reply into the local Qwen voice service",
     )
     llm_speak_test.add_argument("--prompt", required=True)
     llm_speak_test.add_argument(
+        "--model-class", choices=("fast", "deep"), default="fast"
+    )
+    llm_speak_stream_test = subcommands.add_parser(
+        "llm-speak-stream-test",
+        help="stream local LM Studio sentences through Qwen PCM synthesis",
+    )
+    llm_speak_stream_test.add_argument("--prompt", required=True)
+    llm_speak_stream_test.add_argument(
         "--model-class", choices=("fast", "deep"), default="fast"
     )
     listen_test = subcommands.add_parser(
@@ -803,9 +925,19 @@ def main(
         return asyncio.run(_llm_failover_test(settings))
     if args.command == "qwen-tts-test":
         return asyncio.run(_qwen_tts_test(settings, text=args.text))
+    if args.command == "qwen-tts-stream-test":
+        return asyncio.run(_qwen_tts_stream_test(settings, text=args.text))
     if args.command == "llm-speak-test":
         return asyncio.run(
             _llm_speak_test(
+                settings,
+                prompt=args.prompt,
+                model_class=cast(ModelClass, args.model_class),
+            )
+        )
+    if args.command == "llm-speak-stream-test":
+        return asyncio.run(
+            _llm_speak_stream_test(
                 settings,
                 prompt=args.prompt,
                 model_class=cast(ModelClass, args.model_class),

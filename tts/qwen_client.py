@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import math
+from collections.abc import AsyncIterator
 from urllib.parse import urlparse
 
 import httpx
 
-from tts.schemas import SpeechAudio
+from tts.schemas import SpeechAudio, SpeechPCMChunk
 
 
 class QwenTTSError(RuntimeError):
@@ -58,9 +61,58 @@ class QwenTTSClient:
             raise QwenTTSError("Qwen speech service returned no audio")
         return SpeechAudio(response.content, duration_seconds)
 
+    async def stream_synthesize(self, text: str) -> AsyncIterator[SpeechPCMChunk]:
+        normalized = text.strip()
+        if not normalized:
+            raise ValueError("speech text must not be empty")
+
+        try:
+            async with self._client.stream(
+                "POST",
+                f"{self.base_url}/v1/audio/speech/stream",
+                json={"input": normalized},
+                timeout=self.timeout_seconds,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    event = json.loads(line)
+                    if event.get("type") == "end":
+                        return
+                    if event.get("type") == "error":
+                        raise QwenTTSError("Qwen speech stream failed")
+                    if event.get("type") != "audio":
+                        raise QwenTTSError(
+                            "Qwen speech stream returned an invalid event"
+                        )
+                    audio = base64.b64decode(event["audio_b64"], validate=True)
+                    sample_rate = int(event["sample_rate"])
+                    duration_seconds = float(event["duration_seconds"])
+                    if (
+                        not audio
+                        or sample_rate <= 0
+                        or not math.isfinite(duration_seconds)
+                        or duration_seconds <= 0
+                    ):
+                        raise QwenTTSError(
+                            "Qwen speech stream returned an invalid chunk"
+                        )
+                    yield SpeechPCMChunk(audio, sample_rate, duration_seconds)
+        except (
+            httpx.HTTPError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as error:
+            if isinstance(error, QwenTTSError):
+                raise
+            raise QwenTTSError(f"Qwen speech stream failed: {error}") from error
+
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
 
 
-__all__ = ["QwenTTSClient", "QwenTTSError", "SpeechAudio"]
+__all__ = ["QwenTTSClient", "QwenTTSError", "SpeechAudio", "SpeechPCMChunk"]

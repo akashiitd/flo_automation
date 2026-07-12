@@ -87,9 +87,9 @@ uv run python main.py health
 ```
 
 The Qwen3-TTS cloned-voice worker is implemented as an optional loopback-only
-service. It keeps its MLX model loaded, provides `/v1/audio/speech`, and has a
-tested LM Studio sentence-streaming bridge. Live FloCareer audio routing and
-barge-in remain unimplemented.
+service. It keeps its MLX model loaded, provides complete-WAV and streamed-PCM
+speech endpoints, and has a tested LM Studio sentence-streaming bridge. Live
+FloCareer audio routing and barge-in remain unimplemented.
 
 ### Milestone status matrix
 
@@ -108,7 +108,7 @@ barge-in remain unimplemented.
 | 10. Feedback autofill | Not started | Must remain behind preview and approval gates |
 | 11. Interview timer | Not started | Pure timer tests can be developed before live integration |
 | 12. Local dashboard | Not started | Depends on stable backend operations |
-| 13. Qwen cloned live voice | Local service and LM bridge complete; room audio pending | Persistent local Qwen worker, private reference voice, health probe, text-to-WAV client, and sentence-streaming LM bridge are live-validated; browser audio injection, source separation, and barge-in remain pending |
+| 13. Qwen cloned live voice | Local service and LM bridge complete; room audio pending | Persistent local Qwen worker, private reference voice, health probe, text-to-WAV and streamed-PCM clients, and sentence-streaming LM bridge are live-validated; browser audio injection, source separation, live PCM playback, and barge-in remain pending |
 
 ### What is implemented now
 

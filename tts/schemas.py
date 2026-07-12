@@ -11,3 +11,12 @@ class SpeechAudio:
 
     audio: bytes
     duration_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechPCMChunk:
+    """One signed 16-bit mono PCM chunk emitted during live synthesis."""
+
+    audio: bytes
+    sample_rate: int
+    duration_seconds: float
