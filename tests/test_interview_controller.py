@@ -57,3 +57,28 @@ def test_controller_does_not_advance_after_barge_in_until_operator_chooses_next_
     assert controller.state.phase is InterviewPhase.HUMAN_APPROVAL
     assert controller.approve_candidate_prompt() == "What trade-off matters most?"
     assert controller.state.current_question_id == 1
+
+
+def test_controller_repeats_the_active_question_without_scoring_partial_speech() -> (
+    None
+):
+    controller = InterviewController(
+        candidate_name="Candidate Alpha",
+        questions=(
+            InterviewQuestion(
+                id=1, question_text="Explain retries.", ideal_answer="Backoff."
+            ),
+        ),
+    )
+    controller.start()
+    controller.approve_candidate_prompt()
+    controller.approve_candidate_prompt()
+    controller.record_candidate_segment("Pardon, could you repeat that?")
+
+    repeated = controller.repeat_current_question()
+
+    assert repeated == "Explain retries."
+    assert controller.state.phase is InterviewPhase.LISTENING
+    assert controller.state.current_question_id == 1
+    assert controller.state.candidate_answer_segments == []
+    assert controller.transitions[-1].reason == "question_repeated"

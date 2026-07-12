@@ -86,6 +86,15 @@ class InterviewController:
         if normalized:
             self.state.candidate_answer_segments.append(normalized)
 
+    def repeat_current_question(self) -> str:
+        """Discard a repeat request and replay the active question in listening mode."""
+
+        if self.state.phase is not InterviewPhase.LISTENING:
+            raise RuntimeError("a question can be repeated only while listening")
+        self.state.candidate_answer_segments.clear()
+        self._transition(InterviewPhase.LISTENING, "question_repeated")
+        return self._current_question().question_text
+
     def complete_answer(self) -> str:
         if self.state.phase is not InterviewPhase.LISTENING:
             raise RuntimeError("an answer can be completed only while listening")

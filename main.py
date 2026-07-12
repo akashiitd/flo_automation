@@ -627,7 +627,19 @@ async def _supervise_voice_loop(
             _require_supervisor_token(f"SPEAK QUESTION {question_id}")
             prompt = controller.approve_candidate_prompt()
             await _speak_supervised_prompt(settings, speech_client, barge_in, prompt)
-            _require_supervisor_token(f"END ANSWER {question_id}")
+            while True:
+                choice = _choose_supervisor_token(
+                    f"END ANSWER {question_id}",
+                    f"REPEAT QUESTION {question_id}",
+                )
+                if choice == f"END ANSWER {question_id}":
+                    break
+                repeated_question = router.begin_question_repeat()
+                await _speak_supervised_prompt(
+                    settings, speech_client, barge_in, repeated_question
+                )
+                _require_supervisor_token(f"RESUME ANSWER {question_id}")
+                router.resume_answer_capture()
             answer = controller.complete_answer()
             question = controller.state.questions[
                 controller.state.current_question_index

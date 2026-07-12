@@ -98,3 +98,31 @@ def test_candidate_turn_router_does_not_score_audio_outside_an_active_answer_tur
     assert outcome.recorded_answer is False
     assert outcome.question_id is None
     assert router.active_question_id is None
+
+
+def test_candidate_turn_router_discards_late_repeat_speech_until_resumed() -> None:
+    controller = InterviewController(
+        candidate_name="Candidate Alpha",
+        questions=(
+            InterviewQuestion(id=7, question_text="Question?", ideal_answer="Answer."),
+        ),
+    )
+    controller.start()
+    controller.approve_candidate_prompt()
+    controller.approve_candidate_prompt()
+    router = CandidateTurnRouter(controller, PlaybackBargeInController())
+    controller.record_candidate_segment("Pardon, please repeat.")
+
+    assert router.begin_question_repeat() == "Question?"
+    late_repeat = router.on_transcript_segment(
+        SimpleNamespace(text="Could you repeat that?", source="system")
+    )
+    router.resume_answer_capture()
+    answer = router.on_transcript_segment(
+        SimpleNamespace(text="My actual answer.", source="system")
+    )
+
+    assert late_repeat.recorded_answer is False
+    assert late_repeat.question_id is None
+    assert answer.recorded_answer is True
+    assert controller.complete_answer() == "My actual answer."

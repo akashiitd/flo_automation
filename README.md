@@ -303,6 +303,12 @@ At each prompt, type the exact approval token displayed by the command. For a
 follow-up, choose either its displayed `SPEAK FOLLOW-UP <id>` token or `SKIP
 FOLLOW-UP <id>`. Speaking a follow-up requires a second exact
 `SPEAK FOLLOW-UP <id>` confirmation; no prompt is spoken without that approval.
+If the candidate asks to repeat or says “pardon,” type `REPEAT QUESTION <id>`
+instead of ending the answer. Qwen repeats the active question, discards the
+repeat request from the candidate-answer buffer, and stays on the same question.
+After Qwen finishes repeating it, type `RESUME ANSWER <id>` to resume candidate
+capture before the candidate starts answering; this prevents delayed transcript
+fragments of the repeat request from being evaluated as an answer.
 
 The spoken introduction discloses that the system is AI-assisted under Akash's
 supervision. If a candidate asks about identity, requests answers, hints, code,
