@@ -101,6 +101,45 @@ def test_job_description_answers_reject_evidence_not_present_in_source() -> None
         )
 
 
+def test_job_description_answers_accept_evidence_with_normalized_line_breaks() -> None:
+    class MultiLineEvidenceGenerator:
+        async def generate_structured(
+            self, *args: object, **kwargs: object
+        ) -> dict[str, object]:
+            return StructuredGeneration(
+                output={
+                    "answer": "You will use a secret technology.",
+                    "grounded": True,
+                    "evidence": ["RAG pipelines Vector databases LLM APIs Agentic AI"],
+                },
+                metadata=ProviderMetadata(
+                    provider="test",
+                    model="test-model",
+                    request_purpose="candidate_job_question",
+                    latency_ms=1,
+                    input_tokens=1,
+                    output_tokens=1,
+                    estimated_cost_usd=0,
+                ),
+            ).model_dump(mode="json")
+
+    result = asyncio.run(
+        answer_job_description_question(
+            job_description=(
+                "Experience with:\nRAG pipelines\nVector databases\nLLM APIs\n"
+                "Agentic AI"
+            ),
+            candidate_question="What technologies would I use?",
+            generator=MultiLineEvidenceGenerator(),
+        )
+    )
+
+    assert result.answer.answer == (
+        "According to the job description: "
+        "RAG pipelines Vector databases LLM APIs Agentic AI"
+    )
+
+
 def test_job_description_answers_replace_unsupported_model_text_with_fallback() -> None:
     class UnsupportedGenerator:
         async def generate_structured(

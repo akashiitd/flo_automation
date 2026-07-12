@@ -41,6 +41,12 @@ UNAVAILABLE_JOB_DESCRIPTION_ANSWER = (
 )
 
 
+def _normalize_evidence_whitespace(text: str) -> str:
+    """Compare source words while allowing browser line wrapping to differ."""
+
+    return " ".join(text.split())
+
+
 def _candidate_safe_answer(answer: JobDescriptionAnswer) -> JobDescriptionAnswer:
     """Return only source text or the fixed unavailable-detail response."""
 
@@ -104,7 +110,12 @@ async def answer_job_description_question(
     )
     generation = StructuredGeneration.model_validate(response)
     answer = JobDescriptionAnswer.model_validate(generation.output)
-    invalid_evidence = [item for item in answer.evidence if item not in job_description]
+    normalized_description = _normalize_evidence_whitespace(job_description)
+    invalid_evidence = [
+        item
+        for item in answer.evidence
+        if _normalize_evidence_whitespace(item) not in normalized_description
+    ]
     if invalid_evidence:
         raise JobDescriptionError(
             "model returned evidence that is not present in the saved job description"

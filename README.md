@@ -539,10 +539,10 @@ uv run python main.py answer-job-question \
   --question "What technologies would I work with?"
 ```
 
-The local model returns a concise answer with exact Job Description evidence.
-The command rejects evidence that is not present in the saved text. It does not
-control the browser or speak into a call; it is the grounded answer source for a
-future autonomous voice controller.
+The local model returns a concise answer with verifiable Job Description
+evidence. It accepts source line breaks normalized as spaces, but rejects words
+not present in the saved text. It does not control the browser or speak into a
+call; it is the grounded answer source for a future autonomous voice controller.
 
 This private diagnostic can contain interview content and DOM attributes. Keep
 it under ignored `runs/`; do not publish it or paste it into issues or chat.
