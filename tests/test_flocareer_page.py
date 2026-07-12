@@ -630,6 +630,85 @@ def test_code_editor_dom_inspection_is_read_only_and_reports_unique_association(
         browser.close()
 
 
+def test_code_editor_dom_inspection_can_reversibly_open_exact_coding_tabs() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section id="container-normal-13" class="clMainSingleFESug">
+              <span class="clSeqGreen">13</span>
+              <button role="tab" aria-selected="true"
+                onclick="this.setAttribute('aria-selected', 'true');
+                  this.nextElementSibling.setAttribute('aria-selected', 'false');
+                  document.querySelector('[role=tabpanel]').hidden = true">Question</button>
+              <button role="tab" aria-selected="false"
+                onclick="this.setAttribute('aria-selected', 'true');
+                  this.previousElementSibling.setAttribute('aria-selected', 'false');
+                  document.querySelector('[role=tabpanel]').hidden = false;
+                  window.editorTabOpened = true">Code Editor</button>
+              <div role="tabpanel" hidden>
+                <label><input type="checkbox" role="switch"
+                  onclick="window.editorSwitchClicked = true">
+                  <div class="clFloSwithTxt">SHOW CODE EDITOR TO CANDIDATE</div>
+                </label>
+              </div>
+            </section>
+            """
+        )
+
+        observations = FloCareerPage(page).inspect_code_editor_dom(
+            open_code_editor_tabs=True,
+            coding_question_ids=(13,),
+        )
+
+        assert observations[0].question_id == 13
+        assert observations[0].visibility_label_rendered == (True,)
+        assert page.evaluate("Boolean(window.editorTabOpened)") is True
+        assert page.evaluate("Boolean(window.editorSwitchClicked)") is False
+        assert (
+            page.locator('[role="tab"]', has_text="Question").get_attribute(
+                "aria-selected"
+            )
+            == "true"
+        )
+        assert page.locator('[role="switch"]').is_checked() is False
+        browser.close()
+
+
+def test_code_editor_tab_navigation_restores_prior_tab_when_later_card_is_invalid() -> (
+    None
+):
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section class="clMainSingleFESug"><span class="clSeqGreen">13</span>
+              <button role="tab" aria-selected="true"
+                onclick="this.setAttribute('aria-selected', 'true'); this.nextElementSibling.setAttribute('aria-selected', 'false')">Question</button>
+              <button role="tab" aria-selected="false"
+                onclick="this.setAttribute('aria-selected', 'true'); this.previousElementSibling.setAttribute('aria-selected', 'false')">Code Editor</button>
+            </section>
+            """
+        )
+        flocareer = FloCareerPage(page)
+
+        with pytest.raises(CodeEditorWorkflowError, match="question 99"):
+            flocareer.inspect_code_editor_dom(
+                open_code_editor_tabs=True,
+                coding_question_ids=(13, 99),
+            )
+
+        assert (
+            page.get_by_role("tab", name="Question", exact=True).get_attribute(
+                "aria-selected"
+            )
+            == "true"
+        )
+        browser.close()
+
+
 def test_code_editor_dom_inspection_reports_ambiguous_switch_candidates() -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)

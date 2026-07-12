@@ -50,6 +50,16 @@ class HealthReport:
                 return check.status
         raise KeyError(name)
 
+    @property
+    def browser_ready(self) -> bool:
+        """Readiness for guarded browser-only operations without an LLM."""
+
+        required = {"Runs directory writable", "Playwright browser launch"}
+        return all(
+            check.name not in required or check.status is Status.OK
+            for check in self.checks
+        )
+
     def render(self) -> str:
         lines = ["Health check"]
         lines.extend(

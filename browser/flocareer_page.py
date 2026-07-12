@@ -885,11 +885,49 @@ class FloCareerPage:
         questions = [self._parse_question_snapshot(snapshot) for snapshot in snapshots]
         return sorted(questions, key=lambda question: question.id)
 
-    def inspect_code_editor_dom(self) -> list[CodeEditorDomObservation]:
-        """Read coding-card control structure without clicking or mutating it."""
+    def inspect_code_editor_dom(
+        self,
+        *,
+        open_code_editor_tabs: bool = False,
+        coding_question_ids: tuple[int, ...] = (),
+    ) -> list[CodeEditorDomObservation]:
+        """Capture coding-card structure, optionally via reversible tab navigation."""
 
-        raw_observations = self.page.evaluate(
-            r"""
+        tabs_to_restore: list[Locator] = []
+
+        def restore_question_tabs() -> None:
+            for question_tab in tabs_to_restore:
+                question_tab.click()
+                if question_tab.get_attribute("aria-selected") != "true":
+                    raise CodeEditorWorkflowError(
+                        "Question tab did not become active again"
+                    )
+
+        if open_code_editor_tabs:
+            try:
+                for question_id in coding_question_ids:
+                    root = self._question_root(question_id)
+                    editor_tabs = self._visible_locators(
+                        root.get_by_role("tab", name="Code Editor", exact=True)
+                    )
+                    question_tabs = self._visible_locators(
+                        root.get_by_role("tab", name="Question", exact=True)
+                    )
+                    if len(editor_tabs) != 1 or len(question_tabs) != 1:
+                        raise CodeEditorWorkflowError(
+                            "Expected one visible Question and Code Editor tab for "
+                            f"question {question_id}"
+                        )
+                    if editor_tabs[0].get_attribute("aria-selected") != "true":
+                        self.open_code_editor_tab(question_id)
+                        tabs_to_restore.append(question_tabs[0])
+            except Exception:
+                restore_question_tabs()
+                raise
+
+        try:
+            raw_observations = self.page.evaluate(
+                r"""
             async () => {
               const MAX_HTML_LENGTH = 50000;
               const sha256 = (value) => {
@@ -1044,7 +1082,7 @@ class FloCareerPage:
                 if (tabs.length === 0) continue;
 
                 const explicitNumbers = [...root.querySelectorAll(
-                  '[data-question-number], .question-number'
+                  '[data-question-number], .question-number, .clSeqGreen'
                 )].filter(node => /^\d{1,3}$/.test(text(node)));
                 const numericCandidates = [...new Set(
                   [...root.querySelectorAll('*')]
@@ -1115,7 +1153,9 @@ class FloCareerPage:
               return observations;
             }
             """
-        )
+            )
+        finally:
+            restore_question_tabs()
 
         def structural_snapshot(raw: object) -> StructuralDomSnapshot | None:
             if not isinstance(raw, dict):

@@ -24,6 +24,8 @@ class FakeQuestionPage:
         self.launch_clicks = 0
         self.consent_clicks = 0
         self.dom_inspections = 0
+        self.open_code_editor_tabs = False
+        self.coding_question_ids: tuple[int, ...] = ()
 
     def list_join_candidates(self) -> list[JoinCandidate]:
         return [self.candidate]
@@ -79,8 +81,15 @@ class FakeQuestionPage:
             ),
         ]
 
-    def inspect_code_editor_dom(self) -> list[CodeEditorDomObservation]:
+    def inspect_code_editor_dom(
+        self,
+        *,
+        open_code_editor_tabs: bool = False,
+        coding_question_ids: tuple[int, ...] = (),
+    ) -> list[CodeEditorDomObservation]:
         self.dom_inspections += 1
+        self.open_code_editor_tabs = open_code_editor_tabs
+        self.coding_question_ids = coding_question_ids
         control_html = StructuralDomSnapshot(
             html='<input type="checkbox" role="switch">',
             truncated=False,
@@ -152,6 +161,8 @@ def test_question_scan_launches_but_never_joins_or_enables_editor(
     assert page.launch_clicks == 1
     assert page.consent_clicks == 0
     assert page.dom_inspections == 1
+    assert page.open_code_editor_tabs is False
+    assert page.coding_question_ids == (2,)
     assert [question.id for question in result.questions] == [1, 2]
     assert result.questions[1].has_code_editor is True
     saved = json.loads(result.questions_path.read_text(encoding="utf-8"))
@@ -165,3 +176,28 @@ def test_question_scan_launches_but_never_joins_or_enables_editor(
     assert dom_capture["observations"][0]["association_status"] == "unique"
     assert stat.S_IMODE(result.code_editor_dom_path.stat().st_mode) == 0o600
     assert "CLICK_JOIN" not in router.log_path.read_text(encoding="utf-8")
+
+
+def test_question_scan_can_open_only_coding_editor_tabs_for_read_only_capture(
+    tmp_path: Path,
+) -> None:
+    page = FakeQuestionPage()
+
+    run_question_scan(
+        page,
+        candidate_name="Candidate Alpha",
+        session_dir=tmp_path,
+        action_router=ActionRouter(
+            ActionGuard.live_join(), tmp_path / "action_log.jsonl"
+        ),
+        request_approval=lambda action, identifier: approval_token_for(
+            action, identifier
+        ),
+        inspect_code_editor_tabs=True,
+    )
+
+    assert page.open_code_editor_tabs is True
+    assert page.coding_question_ids == (2,)
+    assert "OPEN_CODE_EDITOR_TAB" in (tmp_path / "action_log.jsonl").read_text(
+        encoding="utf-8"
+    )

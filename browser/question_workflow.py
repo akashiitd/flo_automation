@@ -92,7 +92,12 @@ class QuestionScanPage(LaunchWorkflowPage, Protocol):
     def click_consent_ok(self) -> None: ...
     def wait_for_question_panel(self) -> None: ...
     def extract_questions(self) -> list[ExtractedQuestion]: ...
-    def inspect_code_editor_dom(self) -> list[CodeEditorDomObservation]: ...
+    def inspect_code_editor_dom(
+        self,
+        *,
+        open_code_editor_tabs: bool = False,
+        coding_question_ids: tuple[int, ...] = (),
+    ) -> list[CodeEditorDomObservation]: ...
 
 
 def _write_questions(path: Path, questions: tuple[ExtractedQuestion, ...]) -> None:
@@ -144,6 +149,7 @@ def run_question_scan(
     session_dir: Path,
     action_router: ActionRouter,
     request_approval: ApprovalRequester,
+    inspect_code_editor_tabs: bool = False,
 ) -> QuestionScanResult:
     """Launch one candidate page and read questions without clicking Join."""
 
@@ -212,7 +218,31 @@ def run_question_scan(
         )
 
     try:
-        code_editor_dom_observations = tuple(page.inspect_code_editor_dom())
+        coding_question_ids = tuple(
+            question.id for question in questions if question.has_code_editor
+        )
+        if inspect_code_editor_tabs:
+            captured: list[CodeEditorDomObservation] = []
+            navigation = action_router.route(
+                BrowserAction.OPEN_CODE_EDITOR_TAB,
+                operation=lambda: captured.extend(
+                    page.inspect_code_editor_dom(
+                        open_code_editor_tabs=True,
+                        coding_question_ids=coding_question_ids,
+                    )
+                ),
+                candidate_identifier=identifier,
+            )
+            if not navigation.allowed:
+                raise JoinWorkflowError("Code Editor tab navigation is blocked")
+            code_editor_dom_observations = tuple(captured)
+        else:
+            code_editor_dom_observations = tuple(
+                page.inspect_code_editor_dom(
+                    open_code_editor_tabs=False,
+                    coding_question_ids=coding_question_ids,
+                )
+            )
     except Exception as error:
         diagnostic = page.capture_screenshot(
             screenshots_dir, "code_editor_dom_inspection_error"
@@ -223,9 +253,6 @@ def run_question_scan(
     screenshot = page.capture_screenshot(screenshots_dir, "questions_expanded")
     questions_path = session_dir / "questions.json"
     _write_questions(questions_path, questions)
-    coding_question_ids = tuple(
-        question.id for question in questions if question.has_code_editor
-    )
     code_editor_dom_path = session_dir / "code_editor_dom.json"
     _write_code_editor_dom(
         code_editor_dom_path,

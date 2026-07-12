@@ -294,6 +294,7 @@ def scan_candidate_questions(
     *,
     candidate_name: str,
     request_approval: ApprovalRequester,
+    inspect_code_editor_tabs: bool = False,
     login_timeout_seconds: float = 180,
     progress: Callable[[str], None] | None = None,
 ) -> QuestionScanResult:
@@ -325,4 +326,5 @@ def scan_candidate_questions(
             session_dir=session_dir,
             action_router=router,
             request_approval=request_approval,
+            inspect_code_editor_tabs=inspect_code_editor_tabs,
         )

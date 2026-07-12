@@ -292,6 +292,18 @@ structure. Each observation is classified as `unique`, `none`, or `ambiguous`.
 Hidden-but-mounted controls are captured without opening the tab. Neither the
 tab nor any candidate control is clicked during discovery.
 
+To capture the post-tab visibility state without changing candidate visibility,
+opt in to reversible scoped navigation:
+
+```bash
+uv run python main.py questions-scan --candidate "Exact Candidate Name" \
+  --inspect-code-editor-tabs
+```
+
+Only exact coding-question `Code Editor` tabs are opened; the `Question` tab is
+restored after capture. Browser-only guarded commands do not require LM Studio
+to be running.
+
 Structural HTML is allowlist-redacted and capped at 50,000 characters per
 snapshot, with truncation and SHA-256 metadata. Unknown number layouts remain
 `unresolved` rather than being guessed. The file is written with owner-only

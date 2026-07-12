@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.config import Settings
-from app.health import ProbeResult, Status, run_health_checks
+from app.health import CheckResult, HealthReport, ProbeResult, Status, run_health_checks
 
 
 class ReadyProbes:
@@ -68,3 +68,17 @@ def test_health_is_not_ready_when_a_required_service_fails(tmp_path: Path) -> No
     assert report.overall == "NOT_READY"
     assert report.status_for("Meeting transcriber path") is Status.FAIL
     assert report.status_for("Apple Speech adapter") is Status.FAIL
+
+
+def test_browser_readiness_does_not_require_local_model_availability() -> None:
+    report = HealthReport(
+        (
+            CheckResult("Runs directory writable", Status.OK, "runs"),
+            CheckResult("LM Studio reachable", Status.FAIL, "offline"),
+            CheckResult("Local models", Status.FAIL, "offline"),
+            CheckResult("Playwright browser launch", Status.OK, "ready"),
+        )
+    )
+
+    assert report.overall == "NOT_READY"
+    assert report.browser_ready is True

@@ -45,6 +45,18 @@ from transcriber.apple_speech_adapter import AppleSpeechAdapter
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
+def _browser_health_ready(health: object) -> bool:
+    """Keep browser-only workflows independent from local model availability."""
+
+    return bool(
+        getattr(
+            health,
+            "browser_ready",
+            getattr(health, "overall", "") == "READY_FOR_BROWSER_SCAN",
+        )
+    )
+
+
 def _config_dump(settings: Settings) -> int:
     print("Configuration")
     print(settings.safe_dump())
@@ -350,7 +362,7 @@ def _join_dry_run(
     print("FloCareer guarded join discovery")
     print("Safety mode: dry run; launch and Join actions are blocked")
     health = run_health_checks(settings)
-    if health.overall != "READY_FOR_BROWSER_SCAN":
+    if not _browser_health_ready(health):
         print(health.render(), file=sys.stderr)
         print(
             "Join dry run failed: health prerequisites are not ready", file=sys.stderr
@@ -394,7 +406,7 @@ def _join_live(
         print("Code editor requires a separate candidate-and-question approval")
     print("Hang-up and FINISH are always blocked")
     health = run_health_checks(settings)
-    if health.overall != "READY_FOR_BROWSER_SCAN":
+    if not _browser_health_ready(health):
         print(health.render(), file=sys.stderr)
         print("Live join failed: health prerequisites are not ready", file=sys.stderr)
         return 1
@@ -501,13 +513,16 @@ def _questions_scan(
     *,
     candidate_name: str,
     login_timeout_seconds: float,
+    inspect_code_editor_tabs: bool,
 ) -> int:
     print("FloCareer approved question scan")
     print("Safety mode: Launch requires approval; Join is never clicked")
     print("Question cards may be expanded; evaluation controls are untouched")
     print("Code editor DOM is inspected only and is never enabled for the candidate")
+    if inspect_code_editor_tabs:
+        print("Coding Code Editor tabs will open only for capture, then restore")
     health = run_health_checks(settings)
-    if health.overall != "READY_FOR_BROWSER_SCAN":
+    if not _browser_health_ready(health):
         print(health.render(), file=sys.stderr)
         print(
             "Question scan failed: health prerequisites are not ready", file=sys.stderr
@@ -532,6 +547,7 @@ def _questions_scan(
             settings,
             candidate_name=candidate_name,
             request_approval=request_approval,
+            inspect_code_editor_tabs=inspect_code_editor_tabs,
             login_timeout_seconds=login_timeout_seconds,
             progress=lambda message: print(message, flush=True),
         )
@@ -662,6 +678,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=180.0,
         help="seconds to wait for manual login in the opened browser",
     )
+    questions_scan.add_argument(
+        "--inspect-code-editor-tabs",
+        action="store_true",
+        help="reversibly open exact coding tabs before the read-only DOM capture",
+    )
     return parser
 
 
@@ -738,6 +759,7 @@ def main(
             settings,
             candidate_name=args.candidate,
             login_timeout_seconds=args.login_timeout,
+            inspect_code_editor_tabs=args.inspect_code_editor_tabs,
         )
     raise AssertionError(f"Unhandled command: {args.command}")
 

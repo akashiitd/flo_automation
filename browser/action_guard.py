@@ -88,6 +88,7 @@ class ActionGuard:
                     BrowserAction.OPEN_DASHBOARD,
                     BrowserAction.FIND_CANDIDATE,
                     BrowserAction.OPEN_CANDIDATE_MENU,
+                    BrowserAction.OPEN_CODE_EDITOR_TAB,
                 }
             ),
             mode="live_join",
