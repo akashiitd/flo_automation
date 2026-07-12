@@ -539,10 +539,16 @@ uv run python main.py answer-job-question \
   --question "What technologies would I work with?"
 ```
 
-The local model returns a concise answer with verifiable Job Description
-evidence. It accepts source line breaks normalized as spaces, but rejects words
-not present in the saved text. It does not control the browser or speak into a
-call; it is the grounded answer source for a future autonomous voice controller.
+The local model returns a short answer with at most two verifiable Job
+Description excerpts. It accepts source line breaks normalized as spaces, but
+rejects words not present in the saved text. Without `--speak`, it does not
+control the browser or emit audio.
+
+To hear the same verified answer through `INTERVIEWER_TO_CALL`, explicitly add
+`--speak --confirm-disclosed-audio-output`. Confirm this only after telling the
+candidate and obtaining their agreement. Its Loopback monitor must be configured
+to your headphones if you want to hear it locally. If FloCareer is using that
+audio device as its microphone, the candidate can hear the answer too.
 
 This private diagnostic can contain interview content and DOM attributes. Keep
 it under ignored `runs/`; do not publish it or paste it into issues or chat.

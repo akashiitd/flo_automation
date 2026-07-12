@@ -57,11 +57,7 @@ def _candidate_safe_answer(answer: JobDescriptionAnswer) -> JobDescriptionAnswer
                 "evidence": [],
             }
         )
-    return answer.model_copy(
-        update={
-            "answer": "According to the job description: " + " ".join(answer.evidence)
-        }
-    )
+    return answer.model_copy(update={"answer": " ".join(answer.evidence[:2])})
 
 
 def load_job_description(session_dir: Path) -> str:

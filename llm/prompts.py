@@ -38,8 +38,10 @@ team culture, benefits, customer details, technology, or work practices.
 If the description does not support an answer, say that the detail is not
 available and suggest asking the recruiter or interviewer. When `grounded` is
 true, every `evidence` item must contain only words copied from the Job
-Description; joining source line breaks with spaces is allowed. Keep the answer
-concise and professional. Return exactly one JSON object matching the schema.
+Description; joining source line breaks with spaces is allowed. Select at most
+two short, directly relevant evidence items, each at most 180 characters. Keep
+the answer concise and professional. Return exactly one JSON object matching
+the schema.
 """
 
 

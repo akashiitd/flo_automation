@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 import wave
-from collections.abc import AsyncIterable, Mapping, Sequence
+from collections.abc import AsyncIterable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -62,6 +62,7 @@ from tts.schemas import SpeechPCMChunk
 from tts.audio_output import (
     PCMPlaybackError,
     PCMPlaybackSession,
+    PlaybackResult,
     PlaybackBargeInController,
     SoundDeviceOutputBackend,
     play_pcm_stream,
@@ -390,34 +391,22 @@ async def _qwen_tts_playback_test(settings: Settings, *, text: str) -> int:
         / f"qwen_tts_playback_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
     session_dir.mkdir(parents=True, exist_ok=True)
-    client = QwenTTSClient(
-        settings.qwen_tts_base_url,
-        timeout_seconds=settings.qwen_tts_timeout_seconds,
-    )
     raw_pcm: list[bytes] = []
     sample_rate: int | None = None
 
-    async def capture_and_play() -> AsyncIterable[SpeechPCMChunk]:
+    def capture_chunk(chunk: SpeechPCMChunk) -> None:
         nonlocal sample_rate
-        async for chunk in client.stream_synthesize(text):
-            if sample_rate is None:
-                sample_rate = chunk.sample_rate
-            elif chunk.sample_rate != sample_rate:
-                raise QwenTTSError("Qwen speech stream changed sample rates")
-            raw_pcm.append(chunk.audio)
-            yield chunk
+        if sample_rate is None:
+            sample_rate = chunk.sample_rate
+        elif chunk.sample_rate != sample_rate:
+            raise QwenTTSError("Qwen speech stream changed sample rates")
+        raw_pcm.append(chunk.audio)
 
     try:
-        backend = SoundDeviceOutputBackend()
-        playback = PCMPlaybackSession(
-            backend.open_output(settings.interviewer_audio_output_device)
-        )
-        result = await play_pcm_stream(capture_and_play(), playback)
+        result = await _play_qwen_text(settings, text=text, on_chunk=capture_chunk)
     except (PCMPlaybackError, QwenTTSError, ValueError) as error:
         print(f"Qwen playback test failed: {error}", file=sys.stderr)
         return 1
-    finally:
-        await client.aclose()
 
     if sample_rate is None or not raw_pcm:
         print("Qwen playback test failed: no PCM was received", file=sys.stderr)
@@ -428,6 +417,35 @@ async def _qwen_tts_playback_test(settings: Settings, *, text: str) -> int:
     print(f"Played Qwen PCM chunks: {result.chunk_count}")
     print(f"Audio WAV: {audio_path}")
     return 0
+
+
+async def _play_qwen_text(
+    settings: Settings,
+    *,
+    text: str,
+    on_chunk: Callable[[SpeechPCMChunk], None] | None = None,
+) -> PlaybackResult:
+    """Play one approved text string through the configured interviewer route."""
+
+    client = QwenTTSClient(
+        settings.qwen_tts_base_url,
+        timeout_seconds=settings.qwen_tts_timeout_seconds,
+    )
+
+    async def streamed_chunks() -> AsyncIterable[SpeechPCMChunk]:
+        async for chunk in client.stream_synthesize(text):
+            if on_chunk is not None:
+                on_chunk(chunk)
+            yield chunk
+
+    try:
+        backend = SoundDeviceOutputBackend()
+        playback = PCMPlaybackSession(
+            backend.open_output(settings.interviewer_audio_output_device)
+        )
+        return await play_pcm_stream(streamed_chunks(), playback)
+    finally:
+        await client.aclose()
 
 
 async def _qwen_tts_barge_in_test(settings: Settings, *, text: str) -> int:
@@ -1319,6 +1337,7 @@ async def _answer_job_question(
     session_path: Path,
     question: str,
     model_class: ModelClass,
+    speak: bool,
 ) -> int:
     try:
         job_description = load_job_description(session_path)
@@ -1345,6 +1364,17 @@ async def _answer_job_question(
         print("Evidence:")
         for item in result.answer.evidence:
             print(f"- {item}")
+    if speak:
+        print(
+            "Speaking answer through interviewer audio output: "
+            f"{settings.interviewer_audio_output_device}"
+        )
+        try:
+            playback = await _play_qwen_text(settings, text=result.answer.answer)
+        except (PCMPlaybackError, QwenTTSError, ValueError) as error:
+            print(f"Job-description playback failed: {error}", file=sys.stderr)
+            return 1
+        print(f"Played Qwen PCM chunks: {playback.chunk_count}")
     return 0
 
 
@@ -1651,6 +1681,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     answer_job.add_argument("--question", required=True)
     answer_job.add_argument("--model-class", choices=("fast", "deep"), default="fast")
+    answer_job.add_argument(
+        "--speak",
+        action="store_true",
+        help="play the verified answer through the configured interviewer audio output",
+    )
+    answer_job.add_argument(
+        "--confirm-disclosed-audio-output",
+        action="store_true",
+        help="confirm the candidate has been told and agrees to the interviewer audio output",
+    )
     simulate = subcommands.add_parser(
         "simulate-interview",
         help="run a saved session through the controller without browser or audio output",
@@ -1822,6 +1862,12 @@ def main(
             )
         )
     if args.command == "answer-job-question":
+        if args.speak and not args.confirm_disclosed_audio_output:
+            print(
+                "--speak requires --confirm-disclosed-audio-output",
+                file=sys.stderr,
+            )
+            return 2
         try:
             session_path = _session_path(settings, args.session)
         except SessionEvaluationError as error:
@@ -1833,6 +1879,7 @@ def main(
                 session_path=session_path,
                 question=args.question,
                 model_class=cast(ModelClass, args.model_class),
+                speak=args.speak,
             )
         )
     if args.command == "simulate-interview":

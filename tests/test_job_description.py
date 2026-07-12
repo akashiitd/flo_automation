@@ -63,9 +63,9 @@ def test_job_description_answers_are_generated_from_saved_session_text(
     )
 
     assert result.answer.grounded is True
-    assert result.answer.answer == (
-        "According to the job description: "
-        "Build reliable GenAI services with RAG pipelines and APIs."
+    assert (
+        result.answer.answer
+        == "Build reliable GenAI services with RAG pipelines and APIs."
     )
 
 
@@ -134,10 +134,7 @@ def test_job_description_answers_accept_evidence_with_normalized_line_breaks() -
         )
     )
 
-    assert result.answer.answer == (
-        "According to the job description: "
-        "RAG pipelines Vector databases LLM APIs Agentic AI"
-    )
+    assert result.answer.answer == "RAG pipelines Vector databases LLM APIs Agentic AI"
 
 
 def test_job_description_answers_replace_unsupported_model_text_with_fallback() -> None:

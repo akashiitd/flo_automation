@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -59,7 +59,9 @@ class JobDescriptionAnswer(BaseModel):
 
     answer: str = Field(min_length=1)
     grounded: bool
-    evidence: list[str] = Field(default_factory=list)
+    evidence: list[Annotated[str, Field(min_length=1, max_length=180)]] = Field(
+        default_factory=list, max_length=2
+    )
 
     @model_validator(mode="after")
     def grounded_answers_require_evidence(self) -> JobDescriptionAnswer:
