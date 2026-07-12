@@ -458,7 +458,7 @@ class FloCareerPage:
         return [
             controls.nth(index)
             for index in range(controls.count())
-            if controls.nth(index).is_visible()
+            if controls.nth(index).is_visible() and controls.nth(index).is_enabled()
         ]
 
     @staticmethod
