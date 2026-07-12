@@ -18,6 +18,7 @@ from browser.action_router import ActionRouter
 from browser.code_editor_workflow import (
     CandidateDisconnectedError,
     CodeEditorApprovalRequester,
+    CodeEditorResult,
     run_show_code_editor,
 )
 from browser.flocareer_page import FloCareerPage, ScheduledInterview
@@ -25,8 +26,11 @@ from browser.join_workflow import (
     ApprovalRequester,
     JoinDryRunResult,
     JoinLiveResult,
+    JoinWorkflowError,
     run_join_dry_run,
     run_join_live,
+    prepare_launch_control,
+    PostLaunchState,
 )
 from browser.question_workflow import QuestionScanResult, run_question_scan
 from browser.room_workflow import InterviewRoomState, wait_for_candidate_connection
@@ -327,4 +331,85 @@ def scan_candidate_questions(
             action_router=router,
             request_approval=request_approval,
             inspect_code_editor_tabs=inspect_code_editor_tabs,
+        )
+
+
+def enable_candidate_code_editor_prejoin(
+    settings: Settings,
+    *,
+    candidate_name: str,
+    question_id: int,
+    request_approval: ApprovalRequester,
+    request_code_editor_approval: CodeEditorApprovalRequester,
+    login_timeout_seconds: float = 180,
+    progress: Callable[[str], None] | None = None,
+) -> CodeEditorResult:
+    """Show one exact editor after launch, without clicking pre-call Join."""
+
+    report = progress or (lambda message: None)
+    session_id = f"prejoin_code_editor_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    session_dir = settings.runs_dir / session_id
+    screenshots_dir = session_dir / "screenshots"
+    log_path = session_dir / "action_log.jsonl"
+    live_router = ActionRouter(ActionGuard.live_join(), log_path)
+    editor_router = ActionRouter(ActionGuard.code_editor(), log_path)
+
+    with _persistent_flocareer_page(settings) as flocareer:
+        report(f"Opening {settings.flocareer_url}")
+        live_router.route(
+            BrowserAction.OPEN_DASHBOARD,
+            operation=lambda: flocareer.open_dashboard(settings.flocareer_url),
+        )
+        _wait_for_authenticated_dashboard(
+            settings,
+            flocareer,
+            screenshots_dir=screenshots_dir,
+            login_timeout_seconds=login_timeout_seconds,
+            report=report,
+        )
+        prepared = prepare_launch_control(
+            flocareer,
+            candidate_name=candidate_name,
+            session_dir=session_dir,
+            action_router=live_router,
+            launch_screenshot_name="prejoin_editor_launch_approval",
+        )
+        identifier = prepared.candidate_identifier
+        decision = live_router.route(
+            BrowserAction.LAUNCH_INTERVIEW,
+            operation=flocareer.click_launch_interview,
+            candidate_identifier=identifier,
+            approval_token=request_approval(BrowserAction.LAUNCH_INTERVIEW, identifier),
+            screenshot_path=prepared.launch_control_screenshot,
+        )
+        if not decision.allowed:
+            raise JoinWorkflowError("Launch approval was not granted; nothing launched")
+        state = flocareer.wait_for_questions_or_consent()
+        if state is PostLaunchState.CONSENT:
+            consent = flocareer.capture_screenshot(screenshots_dir, "prejoin_consent")
+            if flocareer.visible_consent_ok_count() != 1:
+                raise JoinWorkflowError("Expected exactly one consent OK control")
+            consent_decision = live_router.route(
+                BrowserAction.CLICK_CONSENT_OK,
+                operation=flocareer.click_consent_ok,
+                candidate_identifier=identifier,
+                approval_token=request_approval(
+                    BrowserAction.CLICK_CONSENT_OK, identifier
+                ),
+                screenshot_path=consent,
+            )
+            if not consent_decision.allowed:
+                raise JoinWorkflowError(
+                    "Consent approval was not granted; OK was not clicked"
+                )
+        flocareer.wait_for_question_panel()
+        flocareer.bind_candidate_identifier(identifier, candidate_name=candidate_name)
+        return run_show_code_editor(
+            flocareer,
+            candidate_identifier=identifier,
+            question_id=question_id,
+            session_dir=session_dir,
+            action_router=editor_router,
+            request_approval=request_code_editor_approval,
+            allow_prejoin=True,
         )

@@ -105,6 +105,7 @@ def run_show_code_editor(
     session_dir: Path,
     action_router: ActionRouter,
     request_approval: CodeEditorApprovalRequester,
+    allow_prejoin: bool = False,
 ) -> CodeEditorResult:
     """Show one coding editor after exact candidate/question approval."""
 
@@ -119,7 +120,7 @@ def run_show_code_editor(
         f"{datetime.now(UTC).strftime('%Y%m%d_%H%M%S_%f')}"
     )
     _require_active_candidate(page, candidate_identifier)
-    if not page.candidate_is_connected():
+    if not allow_prejoin and not page.candidate_is_connected():
         raise CandidateDisconnectedError(
             "Candidate is not connected; editor visibility was not changed"
         )
@@ -156,7 +157,7 @@ def run_show_code_editor(
 
     # The operator pause can be long enough for another actor to change the state.
     _require_active_candidate(page, candidate_identifier)
-    if not page.candidate_is_connected():
+    if not allow_prejoin and not page.candidate_is_connected():
         raise CandidateDisconnectedError(
             "Candidate disconnected while awaiting editor approval"
         )
@@ -174,7 +175,7 @@ def run_show_code_editor(
 
     def click_after_final_revalidation() -> None:
         _require_active_candidate(page, candidate_identifier)
-        if not page.candidate_is_connected():
+        if not allow_prejoin and not page.candidate_is_connected():
             raise CandidateDisconnectedError(
                 "Candidate disconnected before the editor could be shown"
             )

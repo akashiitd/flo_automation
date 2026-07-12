@@ -248,6 +248,28 @@ def test_candidate_disconnect_after_editor_approval_never_clicks_switch(
     assert page.clicks == []
 
 
+def test_explicit_prejoin_mode_can_show_editor_without_candidate_connection(
+    tmp_path: Path,
+) -> None:
+    page = FakeCodeEditorPage(CodeEditorVisibility.HIDDEN)
+    page.candidate_connected = False
+
+    result = run_show_code_editor(
+        page,
+        candidate_identifier="candidate-a1b2c3",
+        question_id=13,
+        session_dir=tmp_path,
+        action_router=_router(tmp_path),
+        request_approval=lambda action, identifier, question_id: approval_token_for(
+            action, identifier, question_id=question_id
+        ),
+        allow_prejoin=True,
+    )
+
+    assert result.changed is True
+    assert page.clicks == [13]
+
+
 def test_candidate_binding_is_revalidated_after_approval_pause(
     tmp_path: Path,
 ) -> None:
