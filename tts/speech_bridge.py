@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator, Callable
 from typing import Protocol
 
+from tts.audio_output import PCMPlaybackSession, PlaybackResult, play_pcm_stream
 from tts.schemas import SpeechAudio, SpeechPCMChunk
 
 
@@ -65,6 +66,24 @@ async def iter_provider_pcm(
     if pending.strip():
         async for audio in speech_client.stream_synthesize(pending.strip()):
             yield audio
+
+
+async def play_provider_pcm(
+    text_chunks: AsyncIterable[str],
+    speech_client: StreamingSpeechClient,
+    playback: PCMPlaybackSession,
+    *,
+    on_chunk: Callable[[SpeechPCMChunk], None] | None = None,
+) -> PlaybackResult:
+    """Play completed LLM sentences as Qwen emits their PCM chunks."""
+
+    async def observe_chunks() -> AsyncIterator[SpeechPCMChunk]:
+        async for chunk in iter_provider_pcm(text_chunks, speech_client):
+            if on_chunk is not None:
+                on_chunk(chunk)
+            yield chunk
+
+    return await play_pcm_stream(observe_chunks(), playback)
 
 
 async def speak_provider_stream(

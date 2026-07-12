@@ -23,10 +23,10 @@ The complete roadmap and safety constraints are documented in
 | Guarded provider failover | Implemented | `uv run python main.py llm-failover-test` |
 | Apple Speech generic system-audio capture | Historically validated; candidate-only mode is blocked safely | — |
 | Persistent local cloned voice service | Implemented | `uv run python main.py qwen-tts-test --text "..."` |
-| Local LM Studio → Qwen speech bridge | Implemented | `uv run python main.py llm-speak-test --prompt "..."` |
+| Local LM Studio → Qwen speech bridge | Implemented; streamed playback awaits Qwen-worker validation | `uv run python main.py llm-speak-test --prompt "..."` |
 | Streamed Qwen PCM generation | Implemented and live-validated | `uv run python main.py qwen-tts-stream-test --text "..."` |
 | Local Qwen PCM playback / Loopback bus diagnostics | Implemented and live-validated | `uv run python main.py qwen-tts-playback-test --text "..."` |
-| Candidate-only Apple Speech capture | Blocked safely pending transcriber device-selection support | — |
+| Candidate-only Apple Speech capture | Locally validated with uncommitted external helper; Qwen isolation pending | `uv run python main.py listen-test --seconds 60` |
 | Interview turn controller and barge-in | Not implemented | — |
 | Read-only FloCareer dashboard scan | Implemented | `uv run python main.py browser-scan` |
 | Guarded candidate join discovery | Implemented and live-validated | `uv run python main.py join --candidate "Exact Name" --dry-run` |
@@ -41,9 +41,10 @@ The complete roadmap and safety constraints are documented in
 - FloCareer authentication is completed manually in a persistent local browser.
 - The scanner reads visible dashboard content and saves a screenshot; it does
   not open candidate menus or launch interviews.
-- Candidate-only capture must use the manually configured `CANDIDATE_ONLY`
-  Loopback input. Generic system-audio capture is blocked while the external
-  Apple Speech helper lacks selected-device support.
+- Candidate-only capture uses the manually configured `CANDIDATE_ONLY`
+  Loopback input. Generic system-audio capture remains blocked for this
+  workflow; the adapter requires an external Apple Speech helper that accepts
+  the exact device and otherwise fails closed.
 - LM Studio is the local primary provider.
 - OpenRouter is blocked unless both an API key and explicit cloud-data consent
   are configured.
@@ -247,8 +248,11 @@ uv run python main.py llm-speak-stream-test \
 On the current Mac, Qwen emitted its first PCM chunk in about 0.5 seconds after
 it received a sentence. A local Ornith → Qwen smoke test reached first audio in
 about 15 seconds, dominated by Ornith reaching its first sentence boundary.
-The commands also assemble a WAV artifact for inspection; a future audio player
-or virtual-microphone route can play the PCM chunks as they arrive.
+The PCM commands assemble a WAV artifact for inspection. In addition,
+`llm-speak-stream-test` writes each completed LM Studio sentence to
+`INTERVIEWER_TO_CALL` as Qwen emits PCM, while retaining the combined WAV
+artifact. It requires the local Qwen worker to be running; do not use it in a
+FloCareer call until the candidate-only isolation test has passed.
 
 ### 7. Verify the manual Loopback buses and play local Qwen PCM
 
@@ -277,11 +281,13 @@ uv run python main.py qwen-tts-playback-test \
 
 The direct Qwen playback smoke test has passed with eight PCM chunks written to
 `INTERVIEWER_TO_CALL`. Do not select the device in FloCareer or inject audio
-into a real interview until a supervised test call has passed. The current
-external Meeting Transcriber does not yet accept a selected
-`system_audio_device`; `listen-test` fails closed rather than capture ambiguous
-generic system audio. Update that external component to accept and use the
-exact `CANDIDATE_ONLY` device before candidate-only transcription is enabled.
+into a real interview until a supervised test call has passed. The external
+Meeting Transcriber worktree locally selects the exact `CANDIDATE_ONLY` input
+through `system_audio_device`, and `listen-test` does not fall back to ambiguous
+generic system audio. That external change is not yet a clean committed
+dependency; a stock helper remains blocked. A known Chrome-for-Testing phrase
+has been captured with the microphone off; validate that a distinct Qwen phrase
+is excluded before using the route in a call.
 
 ### 8. Candidate-only Apple Speech capture
 
@@ -289,12 +295,12 @@ exact `CANDIDATE_ONLY` device before candidate-only transcription is enabled.
 uv run python main.py listen-test --seconds 60
 ```
 
-This command is intentionally blocked until the external transcriber accepts
-the selected `CANDIDATE_ONLY` device. Once that support is implemented, play
-English speech from Google Chrome for Testing. The command passes only when at
-least one `system` segment
-is captured and no `microphone` segment is present. Press `Control+C` to stop
-early.
+When the external helper supports it, this command selects the exact
+`CANDIDATE_ONLY` device and fails closed rather than falling back to generic
+system capture. Play English speech from Google Chrome for Testing. The command
+passes only when at least one `system` segment is captured and no `microphone`
+segment is present. Press `Control+C` to stop early. Before a call, also
+confirm that a known Qwen phrase does not appear in the resulting transcript.
 
 Output is saved under:
 
@@ -534,10 +540,10 @@ The next guarded milestones are:
 
 1. Revalidate the guarded Join, question scan, and code-editor flow while a
    human watches a scheduled interview.
-2. Build a local audio-output adapter that plays Qwen PCM as it arrives and
-   routes it to a deliberately selected virtual microphone for the call.
-3. Build a separate candidate-only loopback input for Apple Speech, so Qwen's
-   own voice is not transcribed as a candidate answer.
+2. Validate live LM Studio → Qwen PCM playback through the deliberately
+   selected `INTERVIEWER_TO_CALL` virtual microphone bus.
+3. Complete the Qwen-echo isolation check on the candidate-only Loopback input
+   before using playback in a call.
 4. Add a stateful interview controller: introduction, ordered questions,
    candidate turn, transcript, rubric evaluation, follow-up, and next question.
 5. Add pause/cancel behaviour when the candidate starts speaking, then test

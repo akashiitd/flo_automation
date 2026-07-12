@@ -49,7 +49,7 @@ from tts.audio_output import (
     SoundDeviceOutputBackend,
     play_pcm_stream,
 )
-from tts.speech_bridge import iter_provider_pcm, iter_provider_speech
+from tts.speech_bridge import iter_provider_speech, play_provider_pcm
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -470,35 +470,58 @@ async def _llm_speak_stream_test(
         settings.qwen_tts_base_url,
         timeout_seconds=settings.qwen_tts_timeout_seconds,
     )
+    raw_pcm: list[bytes] = []
+    sample_rate: int | None = None
+
+    def capture_chunk(chunk: SpeechPCMChunk) -> None:
+        nonlocal sample_rate
+        if sample_rate is None:
+            sample_rate = chunk.sample_rate
+        elif chunk.sample_rate != sample_rate:
+            raise QwenTTSError("Qwen speech stream changed sample rates")
+        raw_pcm.append(chunk.audio)
+
     try:
-        stream = await _collect_pcm_stream(
-            iter_provider_pcm(
-                provider.stream_text(
-                    (
-                        {
-                            "role": "system",
-                            "content": (
-                                "Reply with concise spoken interview text only. "
-                                "Use at most two complete sentences."
-                            ),
-                        },
-                        {"role": "user", "content": prompt},
-                    ),
-                    model_class,
-                ),
-                speech_client,
-            )
+        backend = SoundDeviceOutputBackend()
+        playback = PCMPlaybackSession(
+            backend.open_output(settings.interviewer_audio_output_device)
         )
-    except (QwenTTSError, ValueError, TimeoutError) as error:
+        result = await play_provider_pcm(
+            provider.stream_text(
+                (
+                    {
+                        "role": "system",
+                        "content": (
+                            "Reply with concise spoken interview text only. "
+                            "Use at most two complete sentences."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ),
+                model_class,
+            ),
+            speech_client,
+            playback,
+            on_chunk=capture_chunk,
+        )
+    except (PCMPlaybackError, QwenTTSError, ValueError, TimeoutError) as error:
         print(f"LM Studio to Qwen streaming test failed: {error}", file=sys.stderr)
         return 1
     finally:
         await provider.aclose()
         await speech_client.aclose()
+    if sample_rate is None or not raw_pcm:
+        print(
+            "LM Studio to Qwen streaming test failed: no PCM was received",
+            file=sys.stderr,
+        )
+        return 1
+
     audio_path = session_dir / "speech.wav"
-    _write_pcm_wav(audio_path, pcm=stream.pcm, sample_rate=stream.sample_rate)
+    _write_pcm_wav(audio_path, pcm=b"".join(raw_pcm), sample_rate=sample_rate)
+    print(f"Output device: {settings.interviewer_audio_output_device}")
+    print(f"Played Qwen PCM chunks: {result.chunk_count}")
     print(f"Audio WAV: {audio_path}")
-    print(f"Time to first audio: {stream.first_audio_ms}ms")
     return 0
 
 

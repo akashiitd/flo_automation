@@ -13,6 +13,7 @@ from tts.audio_output import (
     play_pcm_stream,
 )
 from tts.schemas import SpeechPCMChunk
+from tts.speech_bridge import play_provider_pcm
 
 
 class FakeOutputStream:
@@ -126,6 +127,52 @@ def test_pcm_playback_cancellation_stops_later_qwen_chunks() -> None:
         result = await task
         assert result.chunk_count == 1
         assert result.cancelled is True
+        assert output.closed is True
+
+    asyncio.run(run())
+
+
+def test_provider_pcm_playback_starts_before_later_lm_text_arrives() -> None:
+    first_written = asyncio.Event()
+    release_second_text = asyncio.Event()
+
+    async def text_chunks() -> AsyncIterator[str]:
+        yield "First sentence."
+        await release_second_text.wait()
+        yield "Second sentence."
+
+    class StreamingSpeechClient:
+        def __init__(self) -> None:
+            self.texts: list[str] = []
+
+        async def stream_synthesize(self, text: str) -> AsyncIterator[SpeechPCMChunk]:
+            self.texts.append(text)
+            yield SpeechPCMChunk(
+                audio=struct.pack("<h", len(self.texts)),
+                sample_rate=24_000,
+                duration_seconds=1 / 24_000,
+            )
+
+    class SignallingOutputStream(FakeOutputStream):
+        def write(self, pcm: bytes) -> None:
+            super().write(pcm)
+            first_written.set()
+
+    async def run() -> None:
+        output = SignallingOutputStream()
+        speech_client = StreamingSpeechClient()
+        result_task = asyncio.create_task(
+            play_provider_pcm(text_chunks(), speech_client, PCMPlaybackSession(output))
+        )
+
+        await first_written.wait()
+        assert speech_client.texts == ["First sentence."]
+        assert len(output.writes) == 1
+
+        release_second_text.set()
+        result = await result_task
+
+        assert result.chunk_count == 2
         assert output.closed is True
 
     asyncio.run(run())
