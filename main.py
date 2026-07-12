@@ -25,6 +25,7 @@ from browser.playwright_controller import (
     BrowserScanError,
     join_candidate_dry_run,
     join_candidate_live,
+    mark_candidate_no_show_live,
     scan_candidate_questions,
     scan_dashboard,
 )
@@ -1084,6 +1085,106 @@ def _join_live(
     return 0
 
 
+def _mark_no_show(
+    settings: Settings,
+    *,
+    candidate_name: str,
+    login_timeout_seconds: float,
+    wait_seconds: float,
+) -> int:
+    print("FloCareer guarded no-show workflow")
+    print("Safety mode: Join requires approvals; no-show requires a fresh approval")
+    print("No-show remains blocked unless the candidate is absent for seven minutes")
+    print(
+        "You must manually open FloCareer's Warning dialog; automation never clicks FINISH"
+    )
+    print("Feedback fields, hang-up, and FINISH are always blocked")
+    health = run_health_checks(settings)
+    if not _browser_health_ready(health):
+        print(health.render(), file=sys.stderr)
+        print("No-show failed: health prerequisites are not ready", file=sys.stderr)
+        return 1
+
+    def request_approval(
+        action: BrowserAction, candidate_identifier: str
+    ) -> str | None:
+        expected = approval_token_for(action, candidate_identifier)
+        print()
+        print(f"Approval required for {action.value}")
+        print(f"Type exactly: {expected}")
+        try:
+            return input("Approval token: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nApproval cancelled", file=sys.stderr)
+            return None
+
+    def wait_for_manual_end(candidate_identifier: str) -> None:
+        expected = f"CONFIRM-INTERVIEW-ENDED {candidate_identifier}"
+        print("Candidate connected; no-show is blocked for this session.")
+        print("End the interview manually in FloCareer when appropriate.")
+        while True:
+            try:
+                entered = input(
+                    f"After it ends, type exactly: {expected}\nConfirmation: "
+                )
+            except (EOFError, KeyboardInterrupt):
+                print("\nConfirmation still required", file=sys.stderr)
+                continue
+            if entered.strip() == expected:
+                return
+            print("Confirmation did not match; browser remains open.")
+
+    def wait_for_no_show_dialog(candidate_identifier: str) -> None:
+        expected = f"CONFIRM-NO-SHOW-DIALOG-READY {candidate_identifier}"
+        print()
+        print("The seven-minute absence window elapsed.")
+        print(
+            "In the visible FloCareer browser, manually open the Warning dialog "
+            "that contains Mark No-show. The automation will not click FINISH."
+        )
+        while True:
+            try:
+                entered = input(
+                    f"After the dialog is visible, type exactly: {expected}\nConfirmation: "
+                )
+            except (EOFError, KeyboardInterrupt):
+                print("\nConfirmation still required", file=sys.stderr)
+                continue
+            if entered.strip() == expected:
+                return
+            print("Confirmation did not match; browser remains open.")
+
+    try:
+        result = mark_candidate_no_show_live(
+            settings,
+            candidate_name=candidate_name,
+            request_approval=request_approval,
+            request_no_show_approval=request_approval,
+            wait_for_no_show_dialog=wait_for_no_show_dialog,
+            wait_for_manual_end=wait_for_manual_end,
+            no_show_wait_seconds=wait_seconds,
+            login_timeout_seconds=login_timeout_seconds,
+            progress=lambda message: print(message, flush=True),
+        )
+    except (BrowserScanError, JoinWorkflowError, ValueError, RuntimeError) as error:
+        print(f"No-show failed: {error}", file=sys.stderr)
+        return 1
+    if result.no_show is None:
+        print("Candidate joined; no-show action was not executed")
+        return 0
+    print(f"Candidate identifier: {result.no_show.candidate_identifier}")
+    print(f"Verified interview level: {result.no_show.level}")
+    print(f"Before screenshot: {result.no_show.before_screenshot}")
+    print(f"After screenshot: {result.no_show.after_screenshot}")
+    print(f"Room state log: {result.room.state_log_path}")
+    print(f"Action log: {result.no_show.action_log_path}")
+    print(
+        "Mark No-show click completed after seven-minute absence and approval. "
+        "Verify FloCareer's resulting status manually."
+    )
+    return 0
+
+
 def _questions_scan(
     settings: Settings,
     *,
@@ -1455,6 +1556,25 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="show this coding question's editor after the candidate connects",
     )
+    no_show = subcommands.add_parser(
+        "no-show",
+        help="join a candidate call, verify a seven-minute absence, then request no-show approval",
+    )
+    no_show.add_argument(
+        "--candidate", required=True, help="exact visible candidate name"
+    )
+    no_show.add_argument(
+        "--login-timeout",
+        type=_positive_seconds,
+        default=180.0,
+        help="seconds to wait for manual login in the opened browser",
+    )
+    no_show.add_argument(
+        "--wait-seconds",
+        type=_positive_seconds,
+        default=420.0,
+        help="candidate absence window; cannot be shorter than seven minutes",
+    )
     questions_scan = subcommands.add_parser(
         "questions-scan",
         help="launch with approval and read all questions without clicking Join",
@@ -1620,6 +1740,16 @@ def main(
             login_timeout_seconds=args.login_timeout,
             enable_code_editor_question=args.enable_code_editor_question,
             candidate_wait_timeout_seconds=args.candidate_wait_timeout,
+        )
+    if args.command == "no-show":
+        if args.wait_seconds < 420:
+            print("--wait-seconds must be at least 420 for a no-show", file=sys.stderr)
+            return 2
+        return _mark_no_show(
+            settings,
+            candidate_name=args.candidate,
+            login_timeout_seconds=args.login_timeout,
+            wait_seconds=args.wait_seconds,
         )
     if args.command == "questions-scan":
         return _questions_scan(

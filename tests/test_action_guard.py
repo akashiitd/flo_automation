@@ -113,6 +113,33 @@ def test_live_join_never_approves_hang_up_or_finish() -> None:
         assert decision.allowed is False
 
 
+def test_no_show_requires_its_own_candidate_bound_approval() -> None:
+    candidate = "candidate-a1b2c3"
+    token = approval_token_for(BrowserAction.MARK_NO_SHOW, candidate)
+
+    assert token == "APPROVE-MARK-NO-SHOW candidate-a1b2c3"
+    assert (
+        ActionGuard.live_join()
+        .decide(
+            BrowserAction.MARK_NO_SHOW,
+            candidate_identifier=candidate,
+            approval_token=token,
+        )
+        .allowed
+        is False
+    )
+    assert (
+        ActionGuard.no_show()
+        .decide(
+            BrowserAction.MARK_NO_SHOW,
+            candidate_identifier=candidate,
+            approval_token=token,
+        )
+        .allowed
+        is True
+    )
+
+
 def test_code_editor_show_requires_candidate_and_question_bound_approval() -> None:
     guard = ActionGuard.code_editor()
     candidate = "candidate-a1b2c3"

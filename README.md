@@ -34,6 +34,7 @@ The complete roadmap and safety constraints are documented in
 | Read-only FloCareer dashboard scan | Implemented | `uv run python main.py browser-scan` |
 | Guarded candidate join discovery | Implemented and live-validated | `uv run python main.py join --candidate "Exact Name" --dry-run` |
 | Approved real Launch, Join, and candidate wait | Implemented; live validation pending | `uv run python main.py join --candidate "Exact Name" --live` |
+| Guarded seven-minute no-show | Implemented; watched validation pending | `uv run python main.py no-show --candidate "Exact Name"` |
 | Approved normal-question extraction | Implemented; 17-card live scan completed, final multiline fix pending revalidation | `uv run python main.py questions-scan --candidate "Exact Name"` |
 | Coding-question detection and DOM capture | Implemented against semantic fixtures; watched revalidation pending | `uv run python main.py questions-scan --candidate "Exact Name"` |
 | Guarded code-editor visibility | Integrated with the persistent live Join session; watched validation pending | `uv run python main.py join --candidate "Exact Name" --live --enable-code-editor-question 9` |
@@ -44,6 +45,10 @@ The complete roadmap and safety constraints are documented in
 - FloCareer authentication is completed manually in a persistent local browser.
 - The scanner reads visible dashboard content and saves a screenshot; it does
   not open candidate menus or launch interviews.
+- The no-show workflow joins only after the existing separate approvals, then
+  requires seven full minutes without a detected connection, a fresh
+  candidate-bound `Mark No-show` approval, an immediate offline recheck, and
+  exact visible control verification. It captures before/after screenshots.
 - Candidate-only capture uses the manually configured `CANDIDATE_ONLY`
   Loopback input. Generic system-audio capture remains blocked for this
   workflow; the adapter requires an external Apple Speech helper that accepts
@@ -442,7 +447,28 @@ screenshots/joined.png
 action_log.jsonl
 ```
 
-### 9. Read and expand questions without joining
+### 9. Mark a verified no-show after seven minutes
+
+Use this instead of `join --live` when the purpose of the session is only to
+handle a candidate absence. It starts the same approved Join flow, monitors the
+exact candidate for at least seven minutes, and blocks the no-show path as soon
+as a connection is observed.
+
+```bash
+uv run python main.py no-show --candidate "Exact Candidate Name"
+```
+
+After seven minutes of continuous absence, it verifies exactly one visible
+`Mark No-show` button, displays a new candidate-bound approval phrase, verifies
+the exact `Intermediate` interview level shown in FloCareer, rechecks that the
+candidate remains offline, then clicks the button and verifies that the control
+has disappeared. If the level differs, it stops for a human to correct it
+manually. It never fills question feedback, ratings, `Mark as`, hang-up, or
+`FINISH`. Confirm FloCareer's resulting status manually after the click.
+Before/after screenshots and the room-state/action logs are saved under
+`runs/no_show_<timestamp>/`.
+
+### 10. Read and expand questions without joining
 
 Run this while watching the browser:
 

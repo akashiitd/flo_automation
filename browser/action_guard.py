@@ -15,6 +15,7 @@ class BrowserAction(str, Enum):
     CLICK_JOIN = "CLICK_JOIN"
     OPEN_CODE_EDITOR_TAB = "OPEN_CODE_EDITOR_TAB"
     SHOW_CODE_EDITOR_TO_CANDIDATE = "SHOW_CODE_EDITOR_TO_CANDIDATE"
+    MARK_NO_SHOW = "MARK_NO_SHOW"
     HANG_UP = "HANG_UP"
     FILL_FEEDBACK = "FILL_FEEDBACK"
     FINISH_INTERVIEW = "FINISH_INTERVIEW"
@@ -24,6 +25,25 @@ _APPROVAL_LABELS = {
     BrowserAction.LAUNCH_INTERVIEW: "APPROVE-LAUNCH",
     BrowserAction.CLICK_CONSENT_OK: "APPROVE-CONSENT",
     BrowserAction.CLICK_JOIN: "APPROVE-JOIN",
+    BrowserAction.MARK_NO_SHOW: "APPROVE-MARK-NO-SHOW",
+}
+
+_MODE_APPROVAL_ACTIONS = {
+    "live_join": frozenset(
+        {
+            BrowserAction.LAUNCH_INTERVIEW,
+            BrowserAction.CLICK_CONSENT_OK,
+            BrowserAction.CLICK_JOIN,
+        }
+    ),
+    "no_show": frozenset(
+        {
+            BrowserAction.LAUNCH_INTERVIEW,
+            BrowserAction.CLICK_CONSENT_OK,
+            BrowserAction.CLICK_JOIN,
+            BrowserAction.MARK_NO_SHOW,
+        }
+    ),
 }
 
 _QUESTION_APPROVAL_LABELS = {
@@ -101,6 +121,21 @@ class ActionGuard:
             mode="code_editor",
         )
 
+    @classmethod
+    def no_show(cls) -> ActionGuard:
+        """Allow a guarded seven-minute no-show decision, never final submit."""
+
+        return cls(
+            allowed_actions=frozenset(
+                {
+                    BrowserAction.OPEN_DASHBOARD,
+                    BrowserAction.FIND_CANDIDATE,
+                    BrowserAction.OPEN_CANDIDATE_MENU,
+                }
+            ),
+            mode="no_show",
+        )
+
     def decide(
         self,
         action: BrowserAction,
@@ -112,8 +147,7 @@ class ActionGuard:
         allowed = action in self.allowed_actions
         if (
             not allowed
-            and self.mode == "live_join"
-            and action in _APPROVAL_LABELS
+            and action in _MODE_APPROVAL_ACTIONS.get(self.mode, frozenset())
             and candidate_identifier is not None
         ):
             allowed = approval_token == approval_token_for(action, candidate_identifier)
@@ -134,7 +168,7 @@ class ActionGuard:
             if allowed
             else (
                 f"{action.value} requires its candidate-bound approval token"
-                if self.mode == "live_join" and action in _APPROVAL_LABELS
+                if action in _MODE_APPROVAL_ACTIONS.get(self.mode, frozenset())
                 else (
                     f"{action.value} requires its candidate-and-question-bound "
                     "approval token"

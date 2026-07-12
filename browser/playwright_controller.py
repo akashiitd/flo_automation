@@ -32,8 +32,18 @@ from browser.join_workflow import (
     prepare_launch_control,
     PostLaunchState,
 )
+from browser.no_show_workflow import (
+    NoShowApprovalRequester,
+    NoShowResult,
+    mark_no_show,
+)
 from browser.question_workflow import QuestionScanResult, run_question_scan
-from browser.room_workflow import InterviewRoomState, wait_for_candidate_connection
+from browser.room_workflow import (
+    InterviewRoomState,
+    RoomMonitorResult,
+    wait_for_candidate_connection,
+    wait_for_no_show_eligibility,
+)
 from browser.screenshots import save_screenshot
 
 
@@ -47,6 +57,13 @@ class BrowserScanResult:
     interviews: tuple[ScheduledInterview, ...]
     screenshot_path: Path
     login_was_required: bool
+
+
+@dataclass(frozen=True, slots=True)
+class NoShowLiveResult:
+    joined: JoinLiveResult
+    room: RoomMonitorResult
+    no_show: NoShowResult | None
 
 
 @contextmanager
@@ -291,6 +308,74 @@ def join_candidate_live(
         )
         wait_for_manual_end(result.candidate_identifier)
         return result
+
+
+def mark_candidate_no_show_live(
+    settings: Settings,
+    *,
+    candidate_name: str,
+    request_approval: ApprovalRequester,
+    request_no_show_approval: NoShowApprovalRequester,
+    wait_for_no_show_dialog: Callable[[str], None],
+    wait_for_manual_end: Callable[[str], None],
+    no_show_wait_seconds: float = 420,
+    login_timeout_seconds: float = 180,
+    progress: Callable[[str], None] | None = None,
+) -> NoShowLiveResult:
+    """Join one call, wait seven minutes, then allow a fresh no-show approval."""
+
+    if no_show_wait_seconds < 420:
+        raise ValueError("No-show wait must be at least 420 seconds")
+    report = progress or (lambda message: None)
+    session_id = f"no_show_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    session_dir = settings.runs_dir / session_id
+    screenshots_dir = session_dir / "screenshots"
+    router = ActionRouter(ActionGuard.no_show(), session_dir / "action_log.jsonl")
+
+    with _persistent_flocareer_page(settings) as flocareer:
+        page = flocareer.page
+        report(f"Opening {settings.flocareer_url}")
+        router.route(
+            BrowserAction.OPEN_DASHBOARD,
+            operation=lambda: flocareer.open_dashboard(settings.flocareer_url),
+        )
+        _wait_for_authenticated_dashboard(
+            settings,
+            flocareer,
+            screenshots_dir=screenshots_dir,
+            login_timeout_seconds=login_timeout_seconds,
+            report=report,
+        )
+        page.wait_for_timeout(500)
+        joined = run_join_live(
+            flocareer,
+            candidate_name=candidate_name,
+            session_dir=session_dir,
+            action_router=router,
+            request_approval=request_approval,
+        )
+        room = wait_for_no_show_eligibility(
+            flocareer,
+            session_dir=session_dir,
+            wait_seconds=no_show_wait_seconds,
+            report=report,
+        )
+        if room.final_state is InterviewRoomState.CANDIDATE_CONNECTED:
+            report("Candidate connected; Mark No-show is blocked for this session")
+            wait_for_manual_end(joined.candidate_identifier)
+            return NoShowLiveResult(joined=joined, room=room, no_show=None)
+        if not room.timed_out:
+            raise BrowserScanError("Candidate wait ended without a no-show timeout")
+        report("Seven-minute no-show window elapsed without candidate connection")
+        wait_for_no_show_dialog(joined.candidate_identifier)
+        no_show = mark_no_show(
+            flocareer,
+            joined=joined,
+            session_dir=session_dir,
+            action_router=router,
+            request_approval=request_no_show_approval,
+        )
+        return NoShowLiveResult(joined=joined, room=room, no_show=no_show)
 
 
 def scan_candidate_questions(

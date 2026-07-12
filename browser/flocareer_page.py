@@ -566,6 +566,58 @@ class FloCareerPage:
             self.read_interview_room_state() is InterviewRoomState.CANDIDATE_CONNECTED
         )
 
+    def _visible_mark_no_show_controls(self) -> list[Locator]:
+        dialogs = self.page.get_by_role("dialog")
+        controls: list[Locator] = []
+        for dialog_index in range(dialogs.count()):
+            dialog = dialogs.nth(dialog_index)
+            if not dialog.is_visible():
+                continue
+            buttons = dialog.get_by_role(
+                "button", name=re.compile(r"^Mark No-show$", re.I)
+            )
+            controls.extend(
+                buttons.nth(index)
+                for index in range(buttons.count())
+                if buttons.nth(index).is_visible() and buttons.nth(index).is_enabled()
+            )
+        return controls
+
+    def visible_mark_no_show_count(self) -> int:
+        return len(self._visible_mark_no_show_controls())
+
+    def click_mark_no_show(self) -> None:
+        controls = self._visible_mark_no_show_controls()
+        if len(controls) != 1:
+            raise JoinWorkflowError(
+                f"Expected one visible Mark No-show control; found {len(controls)}"
+            )
+        controls[0].click()
+
+    def wait_for_mark_no_show_applied(self, *, timeout_seconds: float = 5) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if not self._visible_mark_no_show_controls():
+                return
+            self.page.wait_for_timeout(100)
+        raise JoinWorkflowError("Mark No-show control remained visible after clicking")
+
+    def read_interview_level(self) -> str:
+        control = self.page.locator("#ddIntIntermediateState")
+        visible = [
+            control.nth(index)
+            for index in range(control.count())
+            if control.nth(index).is_visible()
+        ]
+        if len(visible) != 1:
+            raise JoinWorkflowError(
+                f"Expected one visible interview-level control; found {len(visible)}"
+            )
+        value = _clean_text(visible[0].inner_text())
+        if not value:
+            raise JoinWorkflowError("Interview-level control has no visible value")
+        return value
+
     def wait_for_room_poll(self, seconds: float) -> None:
         self.page.wait_for_timeout(seconds * 1_000)
 

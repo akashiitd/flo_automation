@@ -15,6 +15,25 @@ def test_join_command_requires_explicit_dry_run_flag() -> None:
         cli.build_parser().parse_args(["join", "--candidate", "Candidate Alpha"])
 
 
+def test_no_show_command_rejects_a_wait_shorter_than_seven_minutes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    exit_code = cli.main(
+        [
+            "no-show",
+            "--candidate",
+            "Candidate Alpha",
+            "--wait-seconds",
+            "419",
+        ],
+        project_root=tmp_path,
+        environ={},
+    )
+
+    assert exit_code == 2
+    assert "at least 420" in capsys.readouterr().err
+
+
 def test_questions_scan_reports_coding_questions_without_join(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

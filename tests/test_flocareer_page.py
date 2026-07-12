@@ -12,6 +12,26 @@ from browser.question_workflow import ExtractedQuestion
 from browser.room_workflow import InterviewRoomState
 
 
+def test_no_show_controls_require_exact_dialog_button_and_intermediate_level() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <div role="dialog" aria-label="Warning">
+              <button>Call candidate</button><button>Mark No-show</button>
+            </div>
+            <div id="ddIntIntermediateState" role="combobox" aria-expanded="false">Intermediate</div>
+            """
+        )
+        flocareer = FloCareerPage(page)
+
+        assert flocareer.visible_mark_no_show_count() == 1
+        assert flocareer.read_interview_level() == "Intermediate"
+        flocareer.click_mark_no_show()
+        browser.close()
+
+
 def test_dashboard_scan_extracts_rows_without_clicking_actions() -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)

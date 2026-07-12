@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from browser.room_workflow import (
     InterviewRoomState,
     RoomStateTracker,
     wait_for_candidate_connection,
+    wait_for_no_show_eligibility,
 )
 
 
@@ -138,3 +141,21 @@ def test_room_monitor_preserves_disconnect_and_reconnect_audit_history(
         for line in second.state_log_path.read_text(encoding="utf-8").splitlines()
     ]
     assert [record["state"] for record in records].count("LAUNCHED") == 1
+
+
+def test_room_monitor_can_return_a_no_show_eligibility_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    page = FakeRoomPage([InterviewRoomState.WAITING_FOR_CANDIDATE])
+    ticks = iter((0.0, 0.0, 0.0, 421.0))
+    monkeypatch.setattr("browser.room_workflow.time.monotonic", lambda: next(ticks))
+
+    result = wait_for_no_show_eligibility(
+        page,
+        session_dir=tmp_path,
+        poll_interval_seconds=2,
+        wait_seconds=420,
+    )
+
+    assert result.timed_out is True
+    assert result.final_state is InterviewRoomState.WAITING_FOR_CANDIDATE

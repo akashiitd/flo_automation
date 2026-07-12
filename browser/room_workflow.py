@@ -44,6 +44,7 @@ class RoomMonitorResult:
     final_state: InterviewRoomState
     transitions: tuple[RoomStateTransition, ...]
     state_log_path: Path
+    timed_out: bool = False
 
 
 class RoomStateTracker:
@@ -109,6 +110,7 @@ def wait_for_candidate_connection(
     prior_state: InterviewRoomState | None = None,
     prior_transitions: tuple[RoomStateTransition, ...] = (),
     initial_state: InterviewRoomState | None = None,
+    _return_on_timeout: bool = False,
 ) -> RoomMonitorResult:
     """Keep the live session open until a candidate is observed connected.
 
@@ -163,6 +165,18 @@ def wait_for_candidate_connection(
             timeout_seconds is not None
             and time.monotonic() - started >= timeout_seconds
         ):
+            if _return_on_timeout:
+                current = tracker.current
+                if current is None:
+                    raise RoomWorkflowError(
+                        "Candidate wait timed out before room state"
+                    )
+                return RoomMonitorResult(
+                    final_state=current,
+                    transitions=tuple(transitions),
+                    state_log_path=state_log_path,
+                    timed_out=True,
+                )
             raise RoomWorkflowError("Configured candidate wait timeout elapsed")
         state = page.read_interview_room_state()
         if state is InterviewRoomState.LAUNCHED:
@@ -181,3 +195,27 @@ def wait_for_candidate_connection(
             )
             last_status = time.monotonic()
         page.wait_for_room_poll(poll_interval_seconds)
+
+
+def wait_for_no_show_eligibility(
+    page: RoomWorkflowPage,
+    *,
+    session_dir: Path,
+    wait_seconds: float = 420,
+    poll_interval_seconds: float = 2,
+    status_interval_seconds: float = 15,
+    report: Callable[[str], None] | None = None,
+) -> RoomMonitorResult:
+    """Observe one candidate until they connect or the no-show window expires."""
+
+    if wait_seconds < 420:
+        raise ValueError("No-show wait must be at least 420 seconds")
+    return wait_for_candidate_connection(
+        page,
+        session_dir=session_dir,
+        poll_interval_seconds=poll_interval_seconds,
+        status_interval_seconds=status_interval_seconds,
+        timeout_seconds=wait_seconds,
+        report=report,
+        _return_on_timeout=True,
+    )
