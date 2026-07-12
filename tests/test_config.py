@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.config import Settings
 
 
@@ -18,12 +20,22 @@ def test_settings_load_dotenv_and_allow_environment_overrides(tmp_path: Path) ->
         environ={
             "LLM_FAST_TIMEOUT_SECONDS": "3.5",
             "TRANSCRIBE_SYSTEM_AUDIO": "true",
+            "QWEN_TTS_BASE_URL": "http://127.0.0.1:7789/",
         },
     )
 
     assert settings.lmstudio_base_url == "http://from-dotenv.test/v1"
     assert settings.llm_fast_timeout_seconds == 3.5
     assert settings.transcribe_system_audio is True
+    assert settings.qwen_tts_base_url == "http://127.0.0.1:7789"
+
+
+def test_settings_reject_non_loopback_qwen_service_url(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="QWEN_TTS_BASE_URL must use 127.0.0.1"):
+        Settings.load(
+            project_root=tmp_path,
+            environ={"QWEN_TTS_BASE_URL": "http://qwen.example.test:7789"},
+        )
 
 
 def test_safe_dump_never_exposes_api_keys(tmp_path: Path) -> None:

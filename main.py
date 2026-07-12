@@ -40,6 +40,8 @@ from llm.schemas import (
 )
 from llm.usage_tracker import UsageTracker
 from transcriber.apple_speech_adapter import AppleSpeechAdapter
+from tts.qwen_client import QwenTTSClient, QwenTTSError
+from tts.speech_bridge import iter_provider_speech
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -233,6 +235,74 @@ async def _llm_failover_test(settings: Settings) -> int:
     print("[OK] Cloud-enabled timeout routed to the fallback")
     print("[OK] Fallback preserved the evaluator schema and metadata")
     print("Overall: PASS")
+    return 0
+
+
+async def _qwen_tts_test(settings: Settings, *, text: str) -> int:
+    session_dir = (
+        settings.runs_dir / f"qwen_tts_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
+    session_dir.mkdir(parents=True, exist_ok=True)
+    client = QwenTTSClient(
+        settings.qwen_tts_base_url,
+        timeout_seconds=settings.qwen_tts_timeout_seconds,
+    )
+    try:
+        speech = await client.synthesize(text)
+    except (QwenTTSError, ValueError) as error:
+        print(f"Qwen TTS test failed: {error}", file=sys.stderr)
+        return 1
+    finally:
+        await client.aclose()
+
+    audio_path = session_dir / "speech.wav"
+    audio_path.write_bytes(speech.audio)
+    print(f"Audio WAV: {audio_path}")
+    print(f"Audio duration: {speech.duration_seconds:.2f}s")
+    return 0
+
+
+async def _llm_speak_test(
+    settings: Settings, *, prompt: str, model_class: ModelClass
+) -> int:
+    session_dir = (
+        settings.runs_dir / f"llm_speak_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
+    session_dir.mkdir(parents=True, exist_ok=True)
+    provider = LMStudioProvider(settings)
+    speech_client = QwenTTSClient(
+        settings.qwen_tts_base_url,
+        timeout_seconds=settings.qwen_tts_timeout_seconds,
+    )
+    try:
+        audio_count = 0
+        async for speech in iter_provider_speech(
+            provider.stream_text(
+                (
+                    {
+                        "role": "system",
+                        "content": (
+                            "Reply with concise spoken interview text only. "
+                            "Use at most two complete sentences."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ),
+                model_class,
+            ),
+            speech_client,
+        ):
+            audio_count += 1
+            (session_dir / f"speech_{audio_count:02d}.wav").write_bytes(speech.audio)
+    except (QwenTTSError, ValueError, TimeoutError) as error:
+        print(f"LM Studio to Qwen speech test failed: {error}", file=sys.stderr)
+        return 1
+    finally:
+        await provider.aclose()
+        await speech_client.aclose()
+
+    print(f"Generated speech chunks: {audio_count}")
+    print(f"Output directory: {session_dir}")
     return 0
 
 
@@ -618,6 +688,19 @@ def build_parser() -> argparse.ArgumentParser:
         "llm-failover-test",
         help="simulate guarded local-to-cloud failover without sending data",
     )
+    qwen_tts_test = subcommands.add_parser(
+        "qwen-tts-test",
+        help="send supplied text to the local Qwen cloned-voice service",
+    )
+    qwen_tts_test.add_argument("--text", required=True)
+    llm_speak_test = subcommands.add_parser(
+        "llm-speak-test",
+        help="stream a short local LM Studio reply into the local Qwen voice service",
+    )
+    llm_speak_test.add_argument("--prompt", required=True)
+    llm_speak_test.add_argument(
+        "--model-class", choices=("fast", "deep"), default="fast"
+    )
     listen_test = subcommands.add_parser(
         "listen-test",
         help="capture Apple Speech system audio and save a session transcript",
@@ -718,6 +801,16 @@ def main(
         )
     if args.command == "llm-failover-test":
         return asyncio.run(_llm_failover_test(settings))
+    if args.command == "qwen-tts-test":
+        return asyncio.run(_qwen_tts_test(settings, text=args.text))
+    if args.command == "llm-speak-test":
+        return asyncio.run(
+            _llm_speak_test(
+                settings,
+                prompt=args.prompt,
+                model_class=cast(ModelClass, args.model_class),
+            )
+        )
     if args.command == "listen-test":
         return _listen_test(settings, seconds=args.seconds)
     if args.command == "browser-scan":

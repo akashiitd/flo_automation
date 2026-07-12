@@ -22,6 +22,8 @@ The complete roadmap and safety constraints are documented in
 | OpenRouter structured evaluation | Implemented, explicit opt-in | `uv run python main.py llm-test --provider openrouter` |
 | Guarded provider failover | Implemented | `uv run python main.py llm-failover-test` |
 | Apple Speech system-audio capture | Implemented | `uv run python main.py listen-test --seconds 60` |
+| Persistent local cloned voice service | Implemented | `uv run python main.py qwen-tts-test --text "..."` |
+| Local LM Studio → Qwen speech bridge | Implemented | `uv run python main.py llm-speak-test --prompt "..."` |
 | Read-only FloCareer dashboard scan | Implemented | `uv run python main.py browser-scan` |
 | Guarded candidate join discovery | Implemented and live-validated | `uv run python main.py join --candidate "Exact Name" --dry-run` |
 | Approved real Launch, Join, and candidate wait | Implemented; live validation pending | `uv run python main.py join --candidate "Exact Name" --live` |
@@ -102,6 +104,10 @@ TRANSCRIBE_MICROPHONE=false
 # FloCareer and safety
 FLOCAREER_URL=https://app.flocareer.com/
 REQUIRE_APPROVAL_BEFORE_FINISH=true
+
+# Local Qwen cloned-voice worker
+QWEN_TTS_BASE_URL=http://127.0.0.1:7789
+QWEN_TTS_TIMEOUT_SECONDS=45
 ```
 
 To allow OpenRouter, set both values locally:
@@ -141,7 +147,8 @@ Expected final status:
 Overall: READY_FOR_BROWSER_SCAN
 ```
 
-Supertonic is currently optional and may appear as a warning.
+Voice services are optional for browser-only work. Qwen is the cloned-voice
+service; Supertonic may appear as an unavailable optional warning.
 
 ### 3. Test local evaluation
 
@@ -167,7 +174,58 @@ Provider usage is appended to:
 runs/llm_tests/llm_usage.jsonl
 ```
 
-### 5. Test Apple Speech system audio
+### 5. Start the persistent local cloned-voice worker
+
+Qwen is the cloned-voice engine. It runs in its own MLX-Audio Python
+environment and keeps the model loaded between requests. Keep the reference
+recording and its exact transcript private and outside Git.
+
+Save the transcript in a private local text file, then start the loopback-only
+service from the repository root:
+
+```bash
+export QWEN_TTS_REFERENCE_AUDIO=/absolute/private/reference.wav
+export QWEN_TTS_REFERENCE_TEXT_FILE=/absolute/private/reference.txt
+
+HF_HUB_OFFLINE=1 HF_HUB_DISABLE_XET=1 \
+  "$HOME/.local/share/uv/tools/mlx-audio/bin/python" \
+  -m tts.qwen_service --host 127.0.0.1 --port 7789
+```
+
+`HF_HUB_OFFLINE=1` ensures the service uses the already downloaded local
+model. The worker binds only to `127.0.0.1`; do not expose it to the network.
+
+Verify the worker and synthesize supplied text:
+
+```bash
+uv run python main.py health
+uv run python main.py qwen-tts-test --text "Please explain your approach."
+```
+
+The returned WAV is saved under `runs/qwen_tts_<timestamp>/`. The service
+receives only text to speak; it does not receive FloCareer controls, browser
+data, or credentials.
+
+### 6. Test the local LM Studio → Qwen path
+
+This command streams local LM Studio text, sends each completed sentence to
+Qwen, and writes the returned WAV chunks privately:
+
+```bash
+uv run python main.py llm-speak-test \
+  --prompt "Ask one concise Python question." --model-class fast
+```
+
+```text
+Ornith in LM Studio → completed sentence → Qwen local service → WAV chunk
+```
+
+On the current Mac, a warm one-sentence smoke test completed in about 17
+seconds end-to-end for 8.24 seconds of generated speech. The first request
+after starting either service can take longer. This bridge creates audio only;
+routing it into FloCareer and handling candidate barge-in remain separate work.
+
+### 7. Test Apple Speech system audio
 
 ```bash
 uv run python main.py listen-test --seconds 60

@@ -12,7 +12,7 @@ safer v1 is a human-approved copilot that:
 - Listens to candidate answers through Apple Speech/system audio.
 - Uses an LLM provider router with LM Studio local inference as primary and
   OpenRouter as the configurable cloud fallback.
-- Uses Supertonic as the runtime interviewer voice from the greeting onward,
+- Uses local Qwen3-TTS as the cloned runtime interviewer voice from the greeting onward,
   including standard questions, generated follow-ups, coding instructions, and
   the closing statement.
 - Suggests follow-up questions.
@@ -20,18 +20,24 @@ safer v1 is a human-approved copilot that:
 - Stops before final submit unless explicitly approved.
 
 Implementation order and runtime order are different. During development,
-Supertonic is tested independently and integrated after transcription and LLM
-responses are stable. In the finished runtime, Supertonic speaks first and is
-the synthetic interviewer voice throughout the interview.
+Qwen3-TTS is tested independently and integrated after transcription and LLM
+responses are stable. In the finished runtime, Qwen speaks first and is the
+synthetic interviewer voice throughout the interview. Supertonic remains an
+optional fixed-voice alternative, not the cloned-voice runtime.
 
 ---
 
-## Current Implementation Status (2026-07-11)
+## Current Implementation Status (2026-07-12)
 
 This section is the execution checkpoint for a new development session. The
 sections below it remain the detailed target specification. When this status
 section and a later milestone section disagree about what is already built,
 this status section is authoritative.
+
+The later sections titled "Supertonic" describe an earlier voice-engine option.
+For cloned voice, use the implemented loopback-only Qwen3-TTS worker and its
+LM Studio sentence bridge instead. The routing, consent, and echo-suppression
+constraints in those later sections still apply.
 
 ### Repository and operating baseline
 
@@ -80,15 +86,17 @@ uv run python main.py health
     -> Overall: READY_FOR_BROWSER_SCAN
 ```
 
-Supertonic is not running yet and is intentionally reported as an optional
-health warning.
+The Qwen3-TTS cloned-voice worker is implemented as an optional loopback-only
+service. It keeps its MLX model loaded, provides `/v1/audio/speech`, and has a
+tested LM Studio sentence-streaming bridge. Live FloCareer audio routing and
+barge-in remain unimplemented.
 
 ### Milestone status matrix
 
 | Milestone | Status | Evidence |
 | --- | --- | --- |
 | Project skeleton and configuration | Complete | `.env.example`, typed settings, safe config dump, ignored runtime/secrets |
-| 1. Health check | Complete | Python, runs directory, transcriber, Apple Speech, LM Studio, OpenRouter, Playwright, optional Supertonic |
+| 1. Health check | Complete | Python, runs directory, transcriber, Apple Speech, LM Studio, OpenRouter, Playwright, optional Qwen and Supertonic |
 | 2. Provider router and evaluator | Complete | LM Studio and OpenRouter return the same validated schema; JSON repair, strict retry, timeout, low-confidence routing, PII redaction, usage logging |
 | 3. Apple Speech system audio | Complete | Real macOS system audio captured as `system` / `Other`; microphone remained off; JSON and text persisted |
 | 4. Browser dashboard scan | Complete | Persistent manual login, delayed-auth protection, loading protection, card/table extraction, screenshot, no launch action |
@@ -100,7 +108,7 @@ health warning.
 | 10. Feedback autofill | Not started | Must remain behind preview and approval gates |
 | 11. Interview timer | Not started | Pure timer tests can be developed before live integration |
 | 12. Local dashboard | Not started | Depends on stable backend operations |
-| 13. Supertonic live voice | Not started | Postponed until text-only interview flow is stable |
+| 13. Qwen cloned live voice | Local service and LM bridge complete; room audio pending | Persistent local Qwen worker, private reference voice, health probe, text-to-WAV client, and sentence-streaming LM bridge are live-validated; browser audio injection, source separation, and barge-in remain pending |
 
 ### What is implemented now
 

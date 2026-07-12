@@ -1,1 +1,1 @@
-"""Optional Supertonic text-to-speech integration."""
+"""Local text-to-speech integrations for the supervised interview copilot."""

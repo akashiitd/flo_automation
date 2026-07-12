@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlparse
 
 
 DEFAULT_TRANSCRIBER_PATH = Path("../Meeting_transcriber_with_LLM")
@@ -38,6 +39,8 @@ DEFAULTS: dict[str, str] = {
     "FLOCAREER_URL": "https://app.flocareer.com/",
     "SUPERTONIC_BASE_URL": "http://127.0.0.1:7788",
     "SUPERTONIC_VOICE": "interviewer_voice",
+    "QWEN_TTS_BASE_URL": "http://127.0.0.1:7789",
+    "QWEN_TTS_TIMEOUT_SECONDS": "45",
     "RUNS_DIR": "runs",
     "DEFAULT_INTERVIEW_MINUTES": "25",
     "REQUIRE_APPROVAL_BEFORE_FINISH": "true",
@@ -65,6 +68,14 @@ def _parse_int(name: str, value: str) -> int:
         return int(value)
     except ValueError as error:
         raise ValueError(f"{name} must be an integer, got {value!r}") from error
+
+
+def _loopback_url(name: str, value: str) -> str:
+    normalized = value.rstrip("/")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or parsed.hostname != "127.0.0.1":
+        raise ValueError(f"{name} must use 127.0.0.1")
+    return normalized
 
 
 def _resolve_path(project_root: Path, value: str) -> Path:
@@ -127,6 +138,8 @@ class Settings:
     flocareer_url: str
     supertonic_base_url: str
     supertonic_voice: str
+    qwen_tts_base_url: str
+    qwen_tts_timeout_seconds: float
     runs_dir: Path
     default_interview_minutes: int
     require_approval_before_finish: bool
@@ -189,6 +202,12 @@ class Settings:
             flocareer_url=values["FLOCAREER_URL"],
             supertonic_base_url=values["SUPERTONIC_BASE_URL"].rstrip("/"),
             supertonic_voice=values["SUPERTONIC_VOICE"],
+            qwen_tts_base_url=_loopback_url(
+                "QWEN_TTS_BASE_URL", values["QWEN_TTS_BASE_URL"]
+            ),
+            qwen_tts_timeout_seconds=_parse_float(
+                "QWEN_TTS_TIMEOUT_SECONDS", values["QWEN_TTS_TIMEOUT_SECONDS"]
+            ),
             runs_dir=_resolve_path(root, values["RUNS_DIR"]),
             default_interview_minutes=_parse_int(
                 "DEFAULT_INTERVIEW_MINUTES", values["DEFAULT_INTERVIEW_MINUTES"]
@@ -230,6 +249,7 @@ class Settings:
                 f"System audio enabled: {self.transcribe_system_audio}",
                 f"Microphone enabled: {self.transcribe_microphone}",
                 f"FloCareer URL: {self.flocareer_url}",
+                f"Qwen TTS URL: {self.qwen_tts_base_url}",
                 f"Runs directory: {self.runs_dir}",
                 f"Approval required before finish: {self.require_approval_before_finish}",
             )

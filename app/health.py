@@ -281,4 +281,25 @@ def run_health_checks(
         )
     )
 
+    try:
+        qwen_payload = active_probes.get_json(
+            f"{settings.qwen_tts_base_url}/health", timeout=2
+        )
+        qwen_available = qwen_payload.get("status") == "ok"
+        qwen_detail = "HTTP 200" if qwen_available else "unexpected health payload"
+    except Exception as error:
+        qwen_available = False
+        qwen_detail = str(error)
+    checks.append(
+        CheckResult(
+            "Qwen cloned voice",
+            Status.OK if qwen_available else Status.WARN,
+            (
+                f"available at {settings.qwen_tts_base_url} ({qwen_detail})"
+                if qwen_available
+                else f"not running ({qwen_detail})"
+            ),
+        )
+    )
+
     return HealthReport(tuple(checks))
