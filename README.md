@@ -27,7 +27,9 @@ The complete roadmap and safety constraints are documented in
 | Streamed Qwen PCM generation | Implemented and live-validated | `uv run python main.py qwen-tts-stream-test --text "..."` |
 | Local Qwen PCM playback / Loopback bus diagnostics | Implemented and live-validated | `uv run python main.py qwen-tts-playback-test --text "..."` |
 | Candidate-only Apple Speech capture | Locally validated with uncommitted external helper; Qwen isolation pending | `uv run python main.py listen-test --seconds 60` |
-| Interview turn controller and barge-in | Not implemented | — |
+| Offline session evaluation | Partial per-question evaluation; requires explicit question-bound transcript segments | `uv run python main.py evaluate --session runs/<session>` |
+| Interview turn controller and barge-in | Partial simulation/controller; live voice wiring remains gated on Qwen isolation validation | `uv run python main.py simulate-interview --session runs/<session>` |
+| Interview timer | Pure warning simulation implemented; controller and live-call reactions remain pending | `uv run python main.py timer-demo --minutes 25` |
 | Read-only FloCareer dashboard scan | Implemented | `uv run python main.py browser-scan` |
 | Guarded candidate join discovery | Implemented and live-validated | `uv run python main.py join --candidate "Exact Name" --dry-run` |
 | Approved real Launch, Join, and candidate wait | Implemented; live validation pending | `uv run python main.py join --candidate "Exact Name" --live` |
@@ -253,6 +255,28 @@ The PCM commands assemble a WAV artifact for inspection. In addition,
 `INTERVIEWER_TO_CALL` as Qwen emits PCM, while retaining the combined WAV
 artifact. It requires the local Qwen worker to be running; do not use it in a
 FloCareer call until the candidate-only isolation test has passed.
+
+### Evaluate a recorded, question-bound session offline
+
+The evaluator only accepts `source: "system"` transcript segments that carry
+their recorded `question_id`. It deliberately refuses to guess question
+boundaries from timestamps, so interviewer/Qwen audio cannot be scored as a
+candidate answer.
+
+```bash
+uv run python main.py evaluate --session runs/<session>
+uv run python main.py simulate-interview --session runs/<session>
+uv run python main.py simulate-interview --session runs/<session> \
+  --assume-human-prompt-approvals
+uv run python main.py timer-demo --minutes 25
+```
+
+`evaluate` writes an `evaluation.json` and `feedback_preview.md`; neither
+command touches a browser, rating, feedback field, hang-up, or `FINISH`.
+`simulate-interview` stops at its first human-approval state by default. The
+explicit `--assume-human-prompt-approvals` option models those approvals only
+inside the offline trace; it never speaks or emits a candidate-visible action.
+The timer demo is synthetic and does not wait or start a call.
 
 ### 7. Verify the manual Loopback buses and play local Qwen PCM
 

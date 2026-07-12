@@ -102,10 +102,10 @@ FloCareer audio routing and barge-in remain unimplemented.
 | 5. Launch, join, and candidate arrival | Implemented; watched validation pending | `--live` handles optional consent and separate Join approval, then records `LAUNCHED → INTERVIEWER_IN_ROOM → WAITING_FOR_CANDIDATE → CANDIDATE_CONNECTED` while keeping the browser open; hang-up and FINISH remain blocked |
 | 6. Question extraction | Implemented; watched revalidation pending | `questions-scan` reached 17 sequential cards; supplied `.clFESingleSugDet` HTML and automated coverage preserve multiline text; semantic coding detection and optional reversible Code Editor tab capture have fixture coverage |
 | 7. Code editor automation | Persistent-session integration implemented; watched validation pending | The verified card-scoped switch selector, exact question scoping, tab/state revalidation, and candidate-and-question approval are available only through `join --live --enable-code-editor-question`; language and code remain untouched |
-| 8. Offline session evaluation | Not started | Single-answer evaluator exists; session-level aggregation does not |
-| 9. LangGraph controller | Not started | Depends on browser, transcription, evaluator, timer seams |
+| 8. Offline session evaluation | Partial: per-question evaluation and preview implemented; final verdict/strengths/risks pending | `evaluate --session` validates saved questions plus candidate-only `source: system` transcript segments with explicit `question_id`, writes local `evaluation.json` and a non-submitted feedback preview, and never guesses turn boundaries. |
+| 9. Supervised interview controller | Partial pure state controller and simulation implemented; LangGraph scope and live wiring pending | `simulate-interview --session` stops at the first human approval by default; its explicit offline-only approval-assumption option records introduction/question/listen/evaluate/follow-up/next-question transitions. It has no browser or TTS side effects. |
 | 10. Feedback autofill | Not started | Must remain behind preview and approval gates |
-| 11. Interview timer | Not started | Pure timer tests can be developed before live integration |
+| 11. Interview timer | Partial: pure warnings implemented; controller reactions and live integration pending | `timer-demo --minutes 25` deterministically emits the 15-, 10-, 5-, 2-, and 1-minute warnings plus the deadline without starting a call. |
 | 12. Local dashboard | Not started | Depends on stable backend operations |
 | 13. Qwen cloned live voice | Direct playback and Loopback diagnostics live-validated; LM-to-playback wired; room audio pending | Persistent local Qwen worker, private reference voice, health probe, text-to-WAV and streamed-PCM clients, sentence-streaming LM bridge, cancellable 24 kHz mono → 48 kHz stereo PCM playback, exact Loopback-device diagnostics, and LM sentence-to-playback wiring are implemented. A direct Qwen smoke test wrote eight PCM chunks to `INTERVIEWER_TO_CALL`; current live-Qwen revalidation awaits the private worker. |
 
@@ -134,15 +134,17 @@ loop with clear audio boundaries.
    `INTERVIEWER_TO_CALL` as the FloCareer microphone only for the watched test.
    Confirm candidate-only transcription and no Qwen echo before using any live
    interview.
-5. **Add barge-in and recovery.** When candidate-only speech begins, stop or
-   cancel outstanding Qwen playback, retain the turn state, and continue from a
-   safe boundary.
-6. **Add the supervised interview controller.** Build the sequence
+5. **Wire and validate barge-in in the live loop.** The cancellable playback
+   session now has a thread-safe `PlaybackBargeInController` that cancels only
+   on a non-empty `source: system` segment. Connect it to the selected-device
+   callback only after the Qwen echo-isolation test passes, then validate it in
+   a disclosed test call.
+6. **Wire the supervised interview controller to the live loop.** The pure
+   state machine now models the sequence
    `introduction → ordered question → candidate turn → transcript → rubric
-   evaluation → optional follow-up → next question`. Derive the introduction,
-   topics, questions, and scoring criteria from the extracted question/rubric
-   data. Preserve a human approval boundary for candidate-visible browser
-   actions and feedback.
+   evaluation → optional follow-up → next question`; connect its explicit
+   question boundaries to the transcript adapter, while preserving a human
+   approval boundary for candidate-visible prompts and feedback.
 7. **Only then add session aggregation, timer, and feedback preview.** Keep
    feedback submission and `FINISH` outside automation.
 

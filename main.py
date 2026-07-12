@@ -12,7 +12,7 @@ import tempfile
 import time
 import wave
 from collections.abc import AsyncIterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import cast
@@ -29,6 +29,11 @@ from browser.playwright_controller import (
     scan_dashboard,
 )
 from evaluator.scoring import evaluate_answer
+from evaluator.session_evaluation import (
+    SessionEvaluationError,
+    evaluate_session,
+    load_session_inputs,
+)
 from llm.lmstudio_provider import LMStudioProvider
 from llm.openrouter_provider import OpenRouterProvider
 from llm.provider_router import HumanReviewRequired, ProviderRouter
@@ -41,6 +46,8 @@ from llm.schemas import (
 )
 from llm.usage_tracker import UsageTracker
 from transcriber.apple_speech_adapter import AppleSpeechAdapter
+from orchestrator.graph import InterviewController
+from orchestrator.timer import InterviewTimer
 from tts.qwen_client import QwenTTSClient, QwenTTSError
 from tts.schemas import SpeechPCMChunk
 from tts.audio_output import (
@@ -881,6 +888,161 @@ def _questions_scan(
     return 0
 
 
+def _session_path(settings: Settings, raw_path: str) -> Path:
+    path = Path(raw_path).expanduser()
+    resolved = (path if path.is_absolute() else settings.project_root / path).resolve()
+    try:
+        resolved.relative_to(settings.runs_dir.resolve())
+    except ValueError as error:
+        raise SessionEvaluationError(
+            "--session must be a directory under RUNS_DIR"
+        ) from error
+    return resolved
+
+
+async def _evaluate_saved_session(
+    settings: Settings, *, session_path: Path, model_class: ModelClass
+) -> int:
+    try:
+        inputs = load_session_inputs(session_path)
+    except SessionEvaluationError as error:
+        print(f"Session evaluation failed: {error}", file=sys.stderr)
+        return 1
+    provider = LMStudioProvider(settings)
+    try:
+        result = await evaluate_session(inputs, provider, model_class=model_class)
+    except (SessionEvaluationError, TimeoutError, ValueError) as error:
+        print(f"Session evaluation failed: {error}", file=sys.stderr)
+        return 1
+    finally:
+        await provider.aclose()
+    print(f"Overall recommendation: {result.overall_recommendation}")
+    print(f"Confidence: {result.confidence:.2f}")
+    print(f"Evaluation JSON: {result.evaluation_path}")
+    print(f"Feedback preview (not submitted): {result.feedback_preview_path}")
+    print(
+        "Safety: no browser controls, ratings, feedback fields, or FINISH were touched"
+    )
+    return 0
+
+
+async def _simulate_interview(
+    settings: Settings,
+    *,
+    session_path: Path,
+    model_class: ModelClass,
+    assume_human_prompt_approvals: bool,
+) -> int:
+    """Run saved candidate answers through the controller without live side effects."""
+
+    try:
+        inputs = load_session_inputs(session_path)
+    except SessionEvaluationError as error:
+        print(f"Interview simulation failed: {error}", file=sys.stderr)
+        return 1
+    provider = LMStudioProvider(settings)
+    try:
+        evaluation = await evaluate_session(inputs, provider, model_class=model_class)
+    except (SessionEvaluationError, TimeoutError, ValueError) as error:
+        print(f"Interview simulation failed: {error}", file=sys.stderr)
+        return 1
+    finally:
+        await provider.aclose()
+
+    controller = InterviewController(
+        candidate_name="Saved-session simulation",
+        questions=tuple(
+            question
+            for question in inputs.questions
+            if question.id in inputs.answers_by_question_id
+        ),
+    )
+    scores = {score.question_id: score for score in evaluation.question_scores}
+    controller.start()
+    trace_path = inputs.session_dir / "controller_transitions.json"
+    if not assume_human_prompt_approvals:
+        trace_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "simulation_only": True,
+                    "candidate_visible_actions": "not_emitted",
+                    "final_phase": str(controller.state.phase),
+                    "transitions": [
+                        asdict(transition) for transition in controller.transitions
+                    ],
+                },
+                indent=2,
+                default=str,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print("Simulation stopped at HUMAN_APPROVAL for the introduction prompt")
+        print(f"Controller trace: {trace_path}")
+        print(
+            "Re-run with --assume-human-prompt-approvals only to model approval "
+            "inside this offline simulation."
+        )
+        return 0
+    controller.approve_candidate_prompt()
+    controller.approve_candidate_prompt()
+    for question in controller.state.questions:
+        controller.record_candidate_segment(inputs.answers_by_question_id[question.id])
+        controller.complete_answer()
+        score = scores[question.id]
+        controller.record_evaluation(follow_up=score.follow_up)
+        # The simulation records a human choice not to emit a candidate-visible
+        # follow-up. It never invokes TTS or a browser action.
+        controller.skip_optional_follow_up()
+        if controller.prepare_next_question() is not None:
+            controller.approve_candidate_prompt()
+
+    trace_path = inputs.session_dir / "controller_transitions.json"
+    trace_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "simulation_only": True,
+                "candidate_visible_actions": "not_emitted",
+                "final_phase": str(controller.state.phase),
+                "transitions": [
+                    asdict(transition) for transition in controller.transitions
+                ],
+            },
+            indent=2,
+            default=str,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print(f"Simulation final phase: {controller.state.phase}")
+    print(f"Controller trace: {trace_path}")
+    print(f"Feedback preview (not submitted): {evaluation.feedback_preview_path}")
+    print(
+        "Safety: simulation did not start audio, browser, feedback, or FINISH actions"
+    )
+    return 0
+
+
+def _timer_demo(*, minutes: int) -> int:
+    timer = InterviewTimer(minutes=minutes)
+    print("Timer simulation only; no interview is started.")
+    checkpoints = (
+        0,
+        max(0, minutes * 60 - 15 * 60),
+        max(0, minutes * 60 - 10 * 60),
+        max(0, minutes * 60 - 5 * 60),
+        max(0, minutes * 60 - 2 * 60),
+        max(0, minutes * 60 - 60),
+        minutes * 60,
+    )
+    for elapsed in checkpoints:
+        for event in timer.events_at_elapsed(elapsed):
+            print(f"{elapsed // 60:02d}:{elapsed % 60:02d} {event}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Supervised FloCareer interview automation copilot"
@@ -1007,6 +1169,31 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="reversibly open exact coding tabs before the read-only DOM capture",
     )
+    evaluate = subcommands.add_parser(
+        "evaluate",
+        help="evaluate question-bound saved candidate transcripts without browser actions",
+    )
+    evaluate.add_argument(
+        "--session", required=True, help="session directory under runs/"
+    )
+    evaluate.add_argument("--model-class", choices=("fast", "deep"), default="deep")
+    simulate = subcommands.add_parser(
+        "simulate-interview",
+        help="run a saved session through the controller without browser or audio output",
+    )
+    simulate.add_argument(
+        "--session", required=True, help="session directory under runs/"
+    )
+    simulate.add_argument("--model-class", choices=("fast", "deep"), default="deep")
+    simulate.add_argument(
+        "--assume-human-prompt-approvals",
+        action="store_true",
+        help="model prompt approvals in this offline-only simulation",
+    )
+    timer_demo = subcommands.add_parser(
+        "timer-demo", help="print synthetic interview timer warnings without waiting"
+    )
+    timer_demo.add_argument("--minutes", type=int, default=25)
     return parser
 
 
@@ -1109,6 +1296,38 @@ def main(
             login_timeout_seconds=args.login_timeout,
             inspect_code_editor_tabs=args.inspect_code_editor_tabs,
         )
+    if args.command == "evaluate":
+        try:
+            session_path = _session_path(settings, args.session)
+        except SessionEvaluationError as error:
+            print(f"Session evaluation failed: {error}", file=sys.stderr)
+            return 2
+        return asyncio.run(
+            _evaluate_saved_session(
+                settings,
+                session_path=session_path,
+                model_class=cast(ModelClass, args.model_class),
+            )
+        )
+    if args.command == "simulate-interview":
+        try:
+            session_path = _session_path(settings, args.session)
+        except SessionEvaluationError as error:
+            print(f"Interview simulation failed: {error}", file=sys.stderr)
+            return 2
+        return asyncio.run(
+            _simulate_interview(
+                settings,
+                session_path=session_path,
+                model_class=cast(ModelClass, args.model_class),
+                assume_human_prompt_approvals=args.assume_human_prompt_approvals,
+            )
+        )
+    if args.command == "timer-demo":
+        if args.minutes <= 0:
+            print("--minutes must be positive", file=sys.stderr)
+            return 2
+        return _timer_demo(minutes=args.minutes)
     raise AssertionError(f"Unhandled command: {args.command}")
 
 

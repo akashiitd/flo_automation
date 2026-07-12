@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+import threading
 from collections.abc import AsyncIterable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -70,32 +71,68 @@ class PCMPlaybackSession:
         self._output = output
         self._cancelled = False
         self._closed = False
+        self._lock = threading.Lock()
 
     @property
     def cancelled(self) -> bool:
-        return self._cancelled
+        with self._lock:
+            return self._cancelled
 
     def write(self, chunk: SpeechPCMChunk) -> bool:
         """Play one chunk, returning false when cancellation has taken effect."""
 
-        if self._closed:
-            raise PCMPlaybackError("cannot write to a closed playback session")
-        if self._cancelled:
-            return False
-        self._output.write(_qwen_pcm_to_loopback_pcm(chunk))
-        return True
+        with self._lock:
+            if self._closed:
+                raise PCMPlaybackError("cannot write to a closed playback session")
+            if self._cancelled:
+                return False
+            self._output.write(_qwen_pcm_to_loopback_pcm(chunk))
+            return True
 
     def cancel(self) -> None:
         """Prevent later chunks from reaching the local output device."""
 
-        self._cancelled = True
+        with self._lock:
+            self._cancelled = True
 
     def close(self) -> None:
         """Release the local output device exactly once."""
 
-        if not self._closed:
-            self._output.close()
-            self._closed = True
+        with self._lock:
+            if not self._closed:
+                self._output.close()
+                self._closed = True
+
+
+class PlaybackBargeInController:
+    """Cancel active interviewer playback only for candidate-only transcript input."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._playback: PCMPlaybackSession | None = None
+
+    def register(self, playback: PCMPlaybackSession) -> None:
+        with self._lock:
+            self._playback = playback
+
+    def clear(self, playback: PCMPlaybackSession) -> None:
+        with self._lock:
+            if self._playback is playback:
+                self._playback = None
+
+    def on_transcript_segment(self, segment: object) -> bool:
+        """Cancel for non-empty selected candidate audio; ignore all other sources."""
+
+        if str(getattr(segment, "source", "")).strip() != "system":
+            return False
+        if not str(getattr(segment, "text", "")).strip():
+            return False
+        with self._lock:
+            playback = self._playback
+        if playback is None:
+            return False
+        playback.cancel()
+        return True
 
 
 async def play_pcm_stream(
@@ -203,6 +240,7 @@ __all__ = [
     "PCMOutputStream",
     "PCMPlaybackError",
     "PCMPlaybackSession",
+    "PlaybackBargeInController",
     "PlaybackResult",
     "QWEN_SAMPLE_RATE",
     "SoundDeviceOutputBackend",
