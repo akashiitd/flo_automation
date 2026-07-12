@@ -23,12 +23,12 @@ The complete roadmap and safety constraints are documented in
 | Guarded provider failover | Implemented | `uv run python main.py llm-failover-test` |
 | Apple Speech generic system-audio capture | Historically validated; candidate-only mode is blocked safely | — |
 | Persistent local cloned voice service | Implemented | `uv run python main.py qwen-tts-test --text "..."` |
-| Local LM Studio → Qwen speech bridge | Implemented; streamed playback awaits Qwen-worker validation | `uv run python main.py llm-speak-test --prompt "..."` |
+| Local LM Studio → Qwen speech bridge | Implemented and local Loopback playback validated | `uv run python main.py llm-speak-stream-test --prompt "..."` |
 | Streamed Qwen PCM generation | Implemented and live-validated | `uv run python main.py qwen-tts-stream-test --text "..."` |
 | Local Qwen PCM playback / Loopback bus diagnostics | Implemented and live-validated | `uv run python main.py qwen-tts-playback-test --text "..."` |
-| Candidate-only Apple Speech capture | Locally validated with uncommitted external helper; Qwen isolation pending | `uv run python main.py listen-test --seconds 60` |
+| Candidate-only Apple Speech capture | Local Chrome capture and Qwen no-echo isolation validated; external helper remains an uncommitted dependency | `uv run python main.py listen-test --seconds 60` |
 | Offline session evaluation | Partial per-question evaluation; requires explicit question-bound transcript segments | `uv run python main.py evaluate --session runs/<session>` |
-| Interview turn controller and barge-in | Partial simulation/controller; live voice wiring remains gated on Qwen isolation validation | `uv run python main.py simulate-interview --session runs/<session>` |
+| Interview turn controller and barge-in | Partial simulation/controller; live listener/playback wiring remains pending | `uv run python main.py simulate-interview --session runs/<session>` |
 | Interview timer | Pure warning simulation implemented; controller and live-call reactions remain pending | `uv run python main.py timer-demo --minutes 25` |
 | Read-only FloCareer dashboard scan | Implemented | `uv run python main.py browser-scan` |
 | Guarded candidate join discovery | Implemented and live-validated | `uv run python main.py join --candidate "Exact Name" --dry-run` |
@@ -253,8 +253,10 @@ about 15 seconds, dominated by Ornith reaching its first sentence boundary.
 The PCM commands assemble a WAV artifact for inspection. In addition,
 `llm-speak-stream-test` writes each completed LM Studio sentence to
 `INTERVIEWER_TO_CALL` as Qwen emits PCM, while retaining the combined WAV
-artifact. It requires the local Qwen worker to be running; do not use it in a
-FloCareer call until the candidate-only isolation test has passed.
+artifact. A local Loopback isolation test passed: Chrome speech was captured
+on `CANDIDATE_ONLY` while a distinct Qwen phrase on `INTERVIEWER_TO_CALL` was
+absent from the transcript. Live FloCareer wiring and barge-in remain separate
+work.
 
 ### Evaluate a recorded, question-bound session offline
 
@@ -303,15 +305,16 @@ uv run python main.py qwen-tts-playback-test \
   --text "Please explain your approach."
 ```
 
-The direct Qwen playback smoke test has passed with eight PCM chunks written to
-`INTERVIEWER_TO_CALL`. Do not select the device in FloCareer or inject audio
-into a real interview until a supervised test call has passed. The external
-Meeting Transcriber worktree locally selects the exact `CANDIDATE_ONLY` input
-through `system_audio_device`, and `listen-test` does not fall back to ambiguous
-generic system audio. That external change is not yet a clean committed
-dependency; a stock helper remains blocked. A known Chrome-for-Testing phrase
-has been captured with the microphone off; validate that a distinct Qwen phrase
-is excluded before using the route in a call.
+The direct Qwen playback smoke test passed with 11 PCM chunks written to
+`INTERVIEWER_TO_CALL`; the LM Studio → Qwen playback smoke test passed with 28
+chunks. In the subsequent 45-second isolation check, `CANDIDATE_ONLY` captured
+11 Chrome speech segments while the distinct Qwen phrase was absent. Do not
+select the device in FloCareer or inject audio into a real interview until a
+supervised test call has passed. The external Meeting Transcriber worktree
+locally selects the exact `CANDIDATE_ONLY` input through `system_audio_device`,
+and `listen-test` does not fall back to ambiguous generic system audio. That
+external change is not yet a clean committed dependency; a stock helper remains
+blocked.
 
 ### 8. Candidate-only Apple Speech capture
 
@@ -562,18 +565,16 @@ empty or loading shell as a pass.
 
 The next guarded milestones are:
 
-1. Revalidate the guarded Join, question scan, and code-editor flow while a
+1. Cleanly deliver the selected-device support from the external transcriber
+   worktree without staging its unrelated user changes.
+2. Revalidate the guarded Join, question scan, and code-editor flow while a
    human watches a scheduled interview.
-2. Validate live LM Studio → Qwen PCM playback through the deliberately
-   selected `INTERVIEWER_TO_CALL` virtual microphone bus.
-3. Complete the Qwen-echo isolation check on the candidate-only Loopback input
-   before using playback in a call.
-4. Add a stateful interview controller: introduction, ordered questions,
-   candidate turn, transcript, rubric evaluation, follow-up, and next question.
-5. Add pause/cancel behaviour when the candidate starts speaking, then test
-   this full-duplex behaviour in a real call.
-6. Add timer and full-session evaluation, followed by human-approved feedback
-   preview/autofill.
+3. Wire candidate-only transcript callbacks to active Qwen playback for
+   barge-in, then validate that candidate speech stops playback.
+4. Wire the stateful controller to live question boundaries, transcript turns,
+   evaluation, and explicitly approved candidate-visible prompts.
+5. Only after those steps, run a supervised test call and add session verdict,
+   timer reactions, and human-reviewed feedback preview/autofill.
 
 The detailed next-session handoff is stored outside Git at
 `/private/tmp/FLOCAREER_NEXT_SESSION_HANDOFF.md`. Qwen is the cloned-voice
