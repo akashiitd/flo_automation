@@ -41,6 +41,8 @@ DEFAULTS: dict[str, str] = {
     "SUPERTONIC_VOICE": "interviewer_voice",
     "QWEN_TTS_BASE_URL": "http://127.0.0.1:7789",
     "QWEN_TTS_TIMEOUT_SECONDS": "45",
+    "INTERVIEWER_AUDIO_OUTPUT_DEVICE": "INTERVIEWER_TO_CALL",
+    "CANDIDATE_AUDIO_INPUT_DEVICE": "CANDIDATE_ONLY",
     "RUNS_DIR": "runs",
     "DEFAULT_INTERVIEW_MINUTES": "25",
     "REQUIRE_APPROVAL_BEFORE_FINISH": "true",
@@ -140,6 +142,8 @@ class Settings:
     supertonic_voice: str
     qwen_tts_base_url: str
     qwen_tts_timeout_seconds: float
+    interviewer_audio_output_device: str
+    candidate_audio_input_device: str
     runs_dir: Path
     default_interview_minutes: int
     require_approval_before_finish: bool
@@ -208,6 +212,10 @@ class Settings:
             qwen_tts_timeout_seconds=_parse_float(
                 "QWEN_TTS_TIMEOUT_SECONDS", values["QWEN_TTS_TIMEOUT_SECONDS"]
             ),
+            interviewer_audio_output_device=values[
+                "INTERVIEWER_AUDIO_OUTPUT_DEVICE"
+            ].strip(),
+            candidate_audio_input_device=values["CANDIDATE_AUDIO_INPUT_DEVICE"].strip(),
             runs_dir=_resolve_path(root, values["RUNS_DIR"]),
             default_interview_minutes=_parse_int(
                 "DEFAULT_INTERVIEW_MINUTES", values["DEFAULT_INTERVIEW_MINUTES"]
@@ -250,6 +258,8 @@ class Settings:
                 f"Microphone enabled: {self.transcribe_microphone}",
                 f"FloCareer URL: {self.flocareer_url}",
                 f"Qwen TTS URL: {self.qwen_tts_base_url}",
+                f"Interviewer audio output device: {self.interviewer_audio_output_device}",
+                f"Candidate audio input device: {self.candidate_audio_input_device}",
                 f"Runs directory: {self.runs_dir}",
                 f"Approval required before finish: {self.require_approval_before_finish}",
             )

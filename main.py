@@ -43,6 +43,12 @@ from llm.usage_tracker import UsageTracker
 from transcriber.apple_speech_adapter import AppleSpeechAdapter
 from tts.qwen_client import QwenTTSClient, QwenTTSError
 from tts.schemas import SpeechPCMChunk
+from tts.audio_output import (
+    PCMPlaybackError,
+    PCMPlaybackSession,
+    SoundDeviceOutputBackend,
+    play_pcm_stream,
+)
 from tts.speech_bridge import iter_provider_pcm, iter_provider_speech
 
 
@@ -323,6 +329,87 @@ async def _qwen_tts_stream_test(settings: Settings, *, text: str) -> int:
     _write_pcm_wav(audio_path, pcm=stream.pcm, sample_rate=stream.sample_rate)
     print(f"Audio WAV: {audio_path}")
     print(f"Time to first audio: {stream.first_audio_ms}ms")
+    return 0
+
+
+def _audio_devices(settings: Settings) -> int:
+    """Show exact local audio devices without changing macOS device selection."""
+
+    try:
+        backend = SoundDeviceOutputBackend()
+        outputs = backend.list_output_devices()
+        inputs = backend.list_input_devices()
+    except PCMPlaybackError as error:
+        print(f"Audio device diagnostics failed: {error}", file=sys.stderr)
+        return 1
+
+    print("Output-capable audio devices:")
+    for device in outputs:
+        print(f"- {device}")
+    print("Input-capable audio devices:")
+    for device in inputs:
+        print(f"- {device}")
+
+    interviewer_ready = settings.interviewer_audio_output_device in outputs
+    candidate_ready = settings.candidate_audio_input_device in inputs
+    print(
+        "Interviewer output bus: "
+        f"{'READY' if interviewer_ready else 'MISSING'} "
+        f"({settings.interviewer_audio_output_device})"
+    )
+    print(
+        "Candidate input bus: "
+        f"{'READY' if candidate_ready else 'MISSING'} "
+        f"({settings.candidate_audio_input_device})"
+    )
+    return 0 if interviewer_ready and candidate_ready else 1
+
+
+async def _qwen_tts_playback_test(settings: Settings, *, text: str) -> int:
+    """Play streamed Qwen speech through the explicitly configured Loopback bus."""
+
+    session_dir = (
+        settings.runs_dir
+        / f"qwen_tts_playback_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
+    session_dir.mkdir(parents=True, exist_ok=True)
+    client = QwenTTSClient(
+        settings.qwen_tts_base_url,
+        timeout_seconds=settings.qwen_tts_timeout_seconds,
+    )
+    raw_pcm: list[bytes] = []
+    sample_rate: int | None = None
+
+    async def capture_and_play() -> AsyncIterable[SpeechPCMChunk]:
+        nonlocal sample_rate
+        async for chunk in client.stream_synthesize(text):
+            if sample_rate is None:
+                sample_rate = chunk.sample_rate
+            elif chunk.sample_rate != sample_rate:
+                raise QwenTTSError("Qwen speech stream changed sample rates")
+            raw_pcm.append(chunk.audio)
+            yield chunk
+
+    try:
+        backend = SoundDeviceOutputBackend()
+        playback = PCMPlaybackSession(
+            backend.open_output(settings.interviewer_audio_output_device)
+        )
+        result = await play_pcm_stream(capture_and_play(), playback)
+    except (PCMPlaybackError, QwenTTSError, ValueError) as error:
+        print(f"Qwen playback test failed: {error}", file=sys.stderr)
+        return 1
+    finally:
+        await client.aclose()
+
+    if sample_rate is None or not raw_pcm:
+        print("Qwen playback test failed: no PCM was received", file=sys.stderr)
+        return 1
+    audio_path = session_dir / "speech.wav"
+    _write_pcm_wav(audio_path, pcm=b"".join(raw_pcm), sample_rate=sample_rate)
+    print(f"Output device: {settings.interviewer_audio_output_device}")
+    print(f"Played Qwen PCM chunks: {result.chunk_count}")
+    print(f"Audio WAV: {audio_path}")
     return 0
 
 
@@ -807,6 +894,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="stream PCM from the local Qwen cloned-voice service",
     )
     qwen_tts_stream_test.add_argument("--text", required=True)
+    subcommands.add_parser(
+        "audio-devices",
+        help="list local audio devices and verify the configured Loopback buses",
+    )
+    qwen_tts_playback_test = subcommands.add_parser(
+        "qwen-tts-playback-test",
+        help="play streamed Qwen PCM through the configured interviewer Loopback bus",
+    )
+    qwen_tts_playback_test.add_argument("--text", required=True)
     llm_speak_test = subcommands.add_parser(
         "llm-speak-test",
         help="stream a short local LM Studio reply into the local Qwen voice service",
@@ -927,6 +1023,10 @@ def main(
         return asyncio.run(_qwen_tts_test(settings, text=args.text))
     if args.command == "qwen-tts-stream-test":
         return asyncio.run(_qwen_tts_stream_test(settings, text=args.text))
+    if args.command == "audio-devices":
+        return _audio_devices(settings)
+    if args.command == "qwen-tts-playback-test":
+        return asyncio.run(_qwen_tts_playback_test(settings, text=args.text))
     if args.command == "llm-speak-test":
         return asyncio.run(
             _llm_speak_test(

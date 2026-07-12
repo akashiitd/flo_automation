@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.config import Settings
 from transcriber.apple_speech_adapter import AppleSpeechAdapter
 
@@ -58,6 +60,7 @@ def test_adapter_uses_system_audio_only_and_saves_callbacks(tmp_path: Path) -> N
 
     assert captured_options["enable_system_audio"] is True
     assert captured_options["enable_microphone"] is False
+    assert captured_options["system_audio_device"] == "CANDIDATE_ONLY"
     assert captured_options["transcription_backend"] == "apple-speech"
     assert captured_options["enable_live_logging"] is False
     assert summary.segment_count == 1
@@ -65,3 +68,32 @@ def test_adapter_uses_system_audio_only_and_saves_callbacks(tmp_path: Path) -> N
     assert summary.text_path.read_text(encoding="utf-8").endswith(
         "[Other]: Candidate system audio answer\n"
     )
+
+
+def test_adapter_blocks_generic_system_audio_when_factory_cannot_select_device(
+    tmp_path: Path,
+) -> None:
+    transcriber_root = tmp_path / "Meeting_transcriber_with_LLM"
+    (transcriber_root / "src").mkdir(parents=True)
+    (transcriber_root / "src" / "realtime_transcriber.py").touch()
+
+    def factory() -> tuple[object, None]:
+        raise AssertionError("factory must not start with an ambiguous input route")
+
+    settings = Settings.load(
+        project_root=tmp_path,
+        environ={
+            "MEETING_TRANSCRIBER_PATH": str(transcriber_root),
+            "RUNS_DIR": str(tmp_path / "runs"),
+            "TRANSCRIPTION_BACKEND": "apple-speech",
+        },
+    )
+
+    adapter = AppleSpeechAdapter(
+        settings,
+        session_id="candidate_only",
+        transcriber_factory=factory,
+    )
+
+    with pytest.raises(RuntimeError, match="system_audio_device"):
+        adapter.start()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import sys
 from collections.abc import Callable
@@ -100,11 +101,25 @@ class AppleSpeechAdapter:
             return True
 
         factory = self._load_factory()
+        parameters = inspect.signature(factory).parameters.values()
+        supports_candidate_device = any(
+            parameter.name == "system_audio_device"
+            or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+        if not supports_candidate_device:
+            raise RuntimeError(
+                "Meeting Transcriber must accept system_audio_device to capture "
+                "the exact CANDIDATE_ONLY Loopback bus; generic system audio is "
+                "blocked to prevent interviewer-voice echo"
+            )
+
         transcriber, _ = factory(
             model_size="small",
             language="en",
             enable_system_audio=True,
             enable_microphone=False,
+            system_audio_device=self.settings.candidate_audio_input_device,
             callback=self._handle_segment,
             session_name=self.session_id,
             # TranscriptStore persists directly into runs/<session_id>.

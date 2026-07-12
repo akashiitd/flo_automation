@@ -107,7 +107,7 @@ FloCareer audio routing and barge-in remain unimplemented.
 | 10. Feedback autofill | Not started | Must remain behind preview and approval gates |
 | 11. Interview timer | Not started | Pure timer tests can be developed before live integration |
 | 12. Local dashboard | Not started | Depends on stable backend operations |
-| 13. Qwen cloned live voice | Local service and LM bridge complete; room audio pending | Persistent local Qwen worker, private reference voice, health probe, text-to-WAV and streamed-PCM clients, and sentence-streaming LM bridge are live-validated; browser audio injection, source separation, live PCM playback, and barge-in remain pending |
+| 13. Qwen cloned live voice | Local playback and Loopback diagnostics complete; room audio pending | Persistent local Qwen worker, private reference voice, health probe, text-to-WAV and streamed-PCM clients, sentence-streaming LM bridge, cancellable 24 kHz mono → 48 kHz stereo PCM playback, and exact Loopback-device diagnostics are implemented. Candidate-only Apple Speech remains blocked safely until the external transcriber accepts an exact selected input device. |
 
 ### Next-session execution plan
 
@@ -119,10 +119,11 @@ loop with clear audio boundaries.
    `ornith-1.0-35b`, start the private loopback-only Qwen worker, then run
    `qwen-tts-stream-test` and `llm-speak-stream-test`. Confirm Qwen produces
    first PCM in roughly half a second after it receives a complete sentence.
-2. **Implement a local PCM playback adapter.** Consume the existing
-   `iter_provider_pcm` stream and play chunks as they arrive. Keep a file/WAV
-   capture mode for inspection and tests.
-3. **Design and validate explicit audio buses.** Route only Qwen output to a
+2. **Validate the local PCM playback adapter.** The adapter consumes Qwen PCM
+   chunks as they arrive, resamples them for the selected Loopback bus, supports
+   cancellation, and keeps a file/WAV capture mode. Run the explicit local smoke
+   command before any call routing.
+3. **Validate explicit audio buses.** Route only Qwen output to a
    selected virtual microphone for the call, and route only candidate audio to
    Apple Speech. Do not use undifferentiated system audio for both directions;
    it causes Qwen echo/transcription feedback. Virtual-device installation and

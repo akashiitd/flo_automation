@@ -25,7 +25,8 @@ The complete roadmap and safety constraints are documented in
 | Persistent local cloned voice service | Implemented | `uv run python main.py qwen-tts-test --text "..."` |
 | Local LM Studio → Qwen speech bridge | Implemented | `uv run python main.py llm-speak-test --prompt "..."` |
 | Streamed Qwen PCM generation | Implemented and live-validated | `uv run python main.py qwen-tts-stream-test --text "..."` |
-| Live call audio routing / candidate-only capture | Not implemented | — |
+| Local Qwen PCM playback / Loopback bus diagnostics | Implemented; local smoke test pending | `uv run python main.py audio-devices` |
+| Candidate-only Apple Speech capture | Blocked safely pending transcriber device-selection support | — |
 | Interview turn controller and barge-in | Not implemented | — |
 | Read-only FloCareer dashboard scan | Implemented | `uv run python main.py browser-scan` |
 | Guarded candidate join discovery | Implemented and live-validated | `uv run python main.py join --candidate "Exact Name" --dry-run` |
@@ -111,6 +112,10 @@ REQUIRE_APPROVAL_BEFORE_FINISH=true
 # Local Qwen cloned-voice worker
 QWEN_TTS_BASE_URL=http://127.0.0.1:7789
 QWEN_TTS_TIMEOUT_SECONDS=45
+
+# Exact manual Loopback device names. The application never changes macOS defaults.
+INTERVIEWER_AUDIO_OUTPUT_DEVICE=INTERVIEWER_TO_CALL
+CANDIDATE_AUDIO_INPUT_DEVICE=CANDIDATE_ONLY
 ```
 
 To allow OpenRouter, set both values locally:
@@ -244,7 +249,38 @@ about 15 seconds, dominated by Ornith reaching its first sentence boundary.
 The commands also assemble a WAV artifact for inspection; a future audio player
 or virtual-microphone route can play the PCM chunks as they arrive.
 
-### 7. Test Apple Speech system audio
+### 7. Verify the manual Loopback buses and play local Qwen PCM
+
+Create the two Loopback devices manually before using these commands:
+
+```text
+Qwen player → INTERVIEWER_TO_CALL (Pass-Thru only) → FloCareer microphone
+Google Chrome for Testing → CANDIDATE_ONLY (no Pass-Thru) → Apple Speech input
+```
+
+The diagnostics command only reads CoreAudio device state. It never changes
+macOS sound settings:
+
+```bash
+uv run python main.py audio-devices
+```
+
+After the Qwen worker is running, this supervised local smoke command plays
+streamed PCM to `INTERVIEWER_TO_CALL` while retaining a private WAV artifact:
+
+```bash
+uv run python main.py qwen-tts-playback-test \
+  --text "Please explain your approach."
+```
+
+Do not select the device in FloCareer or inject the audio into a real interview
+until a supervised test call has passed. The current external Meeting
+Transcriber does not yet accept a selected `system_audio_device`; `listen-test`
+fails closed rather than capture ambiguous generic system audio. Update that
+external component to accept and use the exact `CANDIDATE_ONLY` device before
+candidate-only transcription is enabled.
+
+### 8. Test Apple Speech system audio
 
 ```bash
 uv run python main.py listen-test --seconds 60
