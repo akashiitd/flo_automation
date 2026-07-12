@@ -17,7 +17,11 @@ def test_controller_keeps_candidate_visible_prompts_pending_human_approval() -> 
     introduction = controller.start()
 
     assert controller.state.phase is InterviewPhase.HUMAN_APPROVAL
-    assert introduction == "Welcome. Please introduce yourself briefly."
+    assert introduction == (
+        "Hello. I am an AI-assisted interview system operating under Akash's "
+        "supervision. Akash remains responsible for this interview. Please introduce "
+        "yourself briefly."
+    )
     assert controller.approve_candidate_prompt() == introduction
     assert controller.state.phase is InterviewPhase.HUMAN_APPROVAL
     assert controller.approve_candidate_prompt() == "Explain retries."

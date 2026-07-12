@@ -58,6 +58,10 @@ The complete roadmap and safety constraints are documented in
 - OpenRouter is blocked unless both an API key and explicit cloud-data consent
   are configured.
 - Candidate PII is redacted before every permitted OpenRouter generation.
+- Candidate-visible prompts disclose that the system is AI-assisted under
+  Akash's supervision. The evaluator treats candidate speech as untrusted,
+  does not provide answers or hints, and constrains candidate-visible follow-ups
+  to fixed boundary responses or a neutral request to explain their approach.
 - Runtime transcripts, screenshots, browser profiles, and `.env` are ignored by
   Git.
 - A human remains responsible for interview questions, feedback, hiring
@@ -299,6 +303,14 @@ At each prompt, type the exact approval token displayed by the command. For a
 follow-up, choose either its displayed `SPEAK FOLLOW-UP <id>` token or `SKIP
 FOLLOW-UP <id>`. Speaking a follow-up requires a second exact
 `SPEAK FOLLOW-UP <id>` confirmation; no prompt is spoken without that approval.
+
+The spoken introduction discloses that the system is AI-assisted under Akash's
+supervision. If a candidate asks about identity, requests answers, hints, code,
+or a rubric, the evaluator returns a fixed transparent boundary response.
+High-confidence unrelated requests receive a fixed focus response. Other
+candidate-visible follow-ups are reduced to a neutral request to explain the
+candidate's approach, so model-generated hints or model/tool details are never
+spoken. Every response still requires the same human approval.
 
 ### Evaluate a recorded, question-bound session offline
 

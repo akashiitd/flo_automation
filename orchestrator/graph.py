@@ -7,7 +7,9 @@ speech is represented as a pending prompt and must be approved by its caller.
 from __future__ import annotations
 
 from dataclasses import dataclass
+
 from app.questions import InterviewQuestion
+from llm.prompts import IDENTITY_DISCLOSURE
 from orchestrator.state import InterviewPhase, InterviewState, PendingPromptKind
 
 
@@ -44,7 +46,7 @@ class InterviewController:
         if self.state.phase is not InterviewPhase.START:
             raise RuntimeError("interview controller has already started")
         self.state.pending_candidate_prompt = (
-            "Welcome. Please introduce yourself briefly."
+            f"Hello. {IDENTITY_DISCLOSURE} Please introduce yourself briefly."
         )
         self.state.pending_prompt_kind = PendingPromptKind.INTRODUCTION
         self._transition(InterviewPhase.HUMAN_APPROVAL, "introduction_pending")
