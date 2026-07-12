@@ -53,6 +53,48 @@ def test_question_parser_keeps_visible_title_when_description_is_unavailable() -
     )
 
 
+def test_question_extraction_captures_question_six_before_later_cards_collapse_it() -> (
+    None
+):
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <section class="question-card" data-question-id="6" data-answer="Question six detail loaded on expansion.">
+              <div class="question-title">Description not available</div>
+              <div class="MuiCollapse-root"><div class="clFESingleSugDet">Description not available</div></div>
+              <button>Bookmark in Video</button><button>Mark as</button><textarea></textarea>
+            </section>
+            <section class="question-card" data-question-id="7" data-answer="Question seven detail loaded on expansion.">
+              <div class="question-title">Description not available</div>
+              <div class="MuiCollapse-root"><div class="clFESingleSugDet">Description not available</div></div>
+              <button>Bookmark in Video</button><button>Mark as</button><textarea></textarea>
+            </section>
+            <script>
+              document.querySelectorAll('.question-card').forEach(card => {
+                card.querySelector('.question-title').onclick = () => {
+                  document.querySelectorAll('.question-card').forEach(other => {
+                    const detail = other.querySelector('.clFESingleSugDet');
+                    detail.textContent = 'Description not available';
+                    other.querySelector('.MuiCollapse-root').className = 'MuiCollapse-root';
+                  });
+                  const detail = card.querySelector('.clFESingleSugDet');
+                  detail.textContent = card.dataset.answer;
+                  card.querySelector('.MuiCollapse-root').className = 'MuiCollapse-entered';
+                };
+              });
+            </script>
+            """
+        )
+
+        questions = FloCareerPage(page).extract_questions()
+        browser.close()
+
+    assert questions[0].id == 6
+    assert questions[0].question_text == "Question six detail loaded on expansion."
+
+
 def test_dashboard_scan_extracts_rows_without_clicking_actions() -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)

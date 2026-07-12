@@ -747,27 +747,7 @@ class FloCareerPage:
                   .forEach(node => add(findRoot(node, ['Code Editor'])));
               }
 
-              if (expand) {
-                for (const root of roots) {
-                  if (root.querySelector('.MuiCollapse-entered')) continue;
-                  const rootTop = root.getBoundingClientRect().top;
-                  const explicit = root.querySelector(
-                    '.question-title, [data-testid="question-title"], [name="title"]'
-                  );
-                  const choices = [...root.querySelectorAll('button, [role="button"], p, span, div')]
-                    .filter(node => {
-                      const text = (node.innerText || '').trim();
-                      const top = node.getBoundingClientRect().top;
-                      return visible(node) && text.length > 20 && text.length < 600
-                        && top - rootTop < 120
-                        && !/Ideal Answer|Guidelines|Bookmark|Feedback|SHOW CODE EDITOR/i.test(text);
-                    });
-                  const target = explicit || choices[0];
-                  if (target) target.click();
-                }
-                await new Promise(resolve => setTimeout(resolve, 500));
-              }
-              return roots.map(root => ({
+              const snapshot = (root) => ({
                 id: root.getAttribute('data-question-id') ||
                   [...root.querySelectorAll('*')]
                     .map(node => (node.textContent || '').trim())
@@ -788,7 +768,51 @@ class FloCareerPage:
                   return detail ? detail.innerText.trim() : '';
                 })(),
                 text: root.innerText || '',
-              }));
+              });
+
+              if (expand) {
+                const snapshots = [];
+                for (const root of roots) {
+                  const detail = root.querySelector('.clFESingleSugDet');
+                  const detailText = (detail?.innerText || '').trim();
+                  if (!detail || !visible(detail)
+                      || !detailText || /^Description not available$/i.test(detailText)) {
+                    const rootTop = root.getBoundingClientRect().top;
+                    const explicit = root.querySelector(
+                      '.question-title, [data-testid="question-title"], [name="title"]'
+                    );
+                    const choices = [...root.querySelectorAll('button, [role="button"], p, span, div')]
+                      .filter(node => {
+                        const text = (node.innerText || '').trim();
+                        const top = node.getBoundingClientRect().top;
+                        return visible(node) && text.length > 20 && text.length < 600
+                          && top - rootTop < 120
+                          && !/Ideal Answer|Guidelines|Bookmark|Feedback|SHOW CODE EDITOR/i.test(text);
+                    });
+                    const target = explicit || choices[0];
+                    if (!target) {
+                      snapshots.push(snapshot(root));
+                      continue;
+                    }
+                    target.click();
+                    const immediate = snapshot(root);
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    const settled = snapshot(root);
+                    const settledDetail = (settled.expanded_question_text || '').trim();
+                    const immediateDetail = (immediate.expanded_question_text || '').trim();
+                    snapshots.push(
+                      /^Description not available$/i.test(settledDetail)
+                        && !/^Description not available$/i.test(immediateDetail)
+                        ? immediate
+                        : settled
+                    );
+                    continue;
+                  }
+                  snapshots.push(snapshot(root));
+                }
+                return snapshots;
+              }
+              return roots.map(snapshot);
             }
             """,
             {"expand": expand},
