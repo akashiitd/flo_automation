@@ -32,6 +32,27 @@ def test_no_show_controls_require_exact_dialog_button_and_intermediate_level() -
         browser.close()
 
 
+def test_question_parser_keeps_visible_title_when_description_is_unavailable() -> None:
+    question = FloCareerPage._parse_question_snapshot(
+        {
+            "id": "11",
+            "title_text": "Description not available",
+            "expanded_question_text": "Description not available",
+            "text": (
+                "11\nA key project deliverable is at risk due to delayed steps. "
+                "How would you recover it?\nDescription not available\n"
+                "Bookmark in Video\nMark as\nFeedback\nYOUR RATING"
+            ),
+            "has_code_editor": False,
+        }
+    )
+
+    assert question.question_text == (
+        "A key project deliverable is at risk due to delayed steps. "
+        "How would you recover it?"
+    )
+
+
 def test_dashboard_scan_extracts_rows_without_clicking_actions() -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)

@@ -64,6 +64,10 @@ def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _is_unavailable_description(value: str) -> bool:
+    return _clean_text(value).casefold() == "description not available"
+
+
 _DATE_LINE = re.compile(
     r"^(?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
     r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|"
@@ -874,6 +878,7 @@ class FloCareerPage:
             line
             for line in lines[:question_end]
             if not line.isdigit()
+            and not _is_unavailable_description(line)
             and not stop_labels.match(line)
             and line not in {"Question", "Code Editor", "SHOW CODE EDITOR TO CANDIDATE"}
             and not any(
@@ -889,10 +894,10 @@ class FloCareerPage:
         ]
         question_text = max(candidates, key=len, default="")
         title_text = str(snapshot.get("title_text") or "").strip()
-        if title_text:
+        if title_text and not _is_unavailable_description(title_text):
             question_text = title_text
         expanded_text = str(snapshot.get("expanded_question_text") or "").strip()
-        if expanded_text:
+        if expanded_text and not _is_unavailable_description(expanded_text):
             question_text = "\n".join(
                 _clean_text(line)
                 for line in expanded_text.splitlines()
