@@ -21,11 +21,11 @@ The complete roadmap and safety constraints are documented in
 | LM Studio structured evaluation | Implemented | `uv run python main.py llm-test --provider lmstudio` |
 | OpenRouter structured evaluation | Implemented, explicit opt-in | `uv run python main.py llm-test --provider openrouter` |
 | Guarded provider failover | Implemented | `uv run python main.py llm-failover-test` |
-| Apple Speech system-audio capture | Implemented | `uv run python main.py listen-test --seconds 60` |
+| Apple Speech generic system-audio capture | Historically validated; candidate-only mode is blocked safely | — |
 | Persistent local cloned voice service | Implemented | `uv run python main.py qwen-tts-test --text "..."` |
 | Local LM Studio → Qwen speech bridge | Implemented | `uv run python main.py llm-speak-test --prompt "..."` |
 | Streamed Qwen PCM generation | Implemented and live-validated | `uv run python main.py qwen-tts-stream-test --text "..."` |
-| Local Qwen PCM playback / Loopback bus diagnostics | Implemented; local smoke test pending | `uv run python main.py audio-devices` |
+| Local Qwen PCM playback / Loopback bus diagnostics | Implemented and live-validated | `uv run python main.py qwen-tts-playback-test --text "..."` |
 | Candidate-only Apple Speech capture | Blocked safely pending transcriber device-selection support | — |
 | Interview turn controller and barge-in | Not implemented | — |
 | Read-only FloCareer dashboard scan | Implemented | `uv run python main.py browser-scan` |
@@ -41,8 +41,9 @@ The complete roadmap and safety constraints are documented in
 - FloCareer authentication is completed manually in a persistent local browser.
 - The scanner reads visible dashboard content and saves a screenshot; it does
   not open candidate menus or launch interviews.
-- Candidate audio is captured from macOS system audio. Microphone capture is
-  forced off in `listen-test`.
+- Candidate-only capture must use the manually configured `CANDIDATE_ONLY`
+  Loopback input. Generic system-audio capture is blocked while the external
+  Apple Speech helper lacks selected-device support.
 - LM Studio is the local primary provider.
 - OpenRouter is blocked unless both an API key and explicit cloud-data consent
   are configured.
@@ -251,11 +252,12 @@ or virtual-microphone route can play the PCM chunks as they arrive.
 
 ### 7. Verify the manual Loopback buses and play local Qwen PCM
 
-Create the two Loopback devices manually before using these commands:
+Loopback is the selected, manually configured routing layer. The verified
+devices are both 48 kHz stereo:
 
 ```text
 Qwen player → INTERVIEWER_TO_CALL (Pass-Thru only) → FloCareer microphone
-Google Chrome for Testing → CANDIDATE_ONLY (no Pass-Thru) → Apple Speech input
+Google Chrome for Testing → CANDIDATE_ONLY (no Pass-Thru) → candidate capture
 ```
 
 The diagnostics command only reads CoreAudio device state. It never changes
@@ -273,21 +275,24 @@ uv run python main.py qwen-tts-playback-test \
   --text "Please explain your approach."
 ```
 
-Do not select the device in FloCareer or inject the audio into a real interview
-until a supervised test call has passed. The current external Meeting
-Transcriber does not yet accept a selected `system_audio_device`; `listen-test`
-fails closed rather than capture ambiguous generic system audio. Update that
-external component to accept and use the exact `CANDIDATE_ONLY` device before
-candidate-only transcription is enabled.
+The direct Qwen playback smoke test has passed with eight PCM chunks written to
+`INTERVIEWER_TO_CALL`. Do not select the device in FloCareer or inject audio
+into a real interview until a supervised test call has passed. The current
+external Meeting Transcriber does not yet accept a selected
+`system_audio_device`; `listen-test` fails closed rather than capture ambiguous
+generic system audio. Update that external component to accept and use the
+exact `CANDIDATE_ONLY` device before candidate-only transcription is enabled.
 
-### 8. Test Apple Speech system audio
+### 8. Candidate-only Apple Speech capture
 
 ```bash
 uv run python main.py listen-test --seconds 60
 ```
 
-While it runs, play English speech from Chrome or another Mac application. You
-do not need to speak. The command passes only when at least one `system` segment
+This command is intentionally blocked until the external transcriber accepts
+the selected `CANDIDATE_ONLY` device. Once that support is implemented, play
+English speech from Google Chrome for Testing. The command passes only when at
+least one `system` segment
 is captured and no `microphone` segment is present. Press `Control+C` to stop
 early.
 
