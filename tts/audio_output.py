@@ -136,18 +136,27 @@ class PlaybackBargeInController:
 
 
 async def play_pcm_stream(
-    chunks: AsyncIterable[SpeechPCMChunk], playback: PCMPlaybackSession
+    chunks: AsyncIterable[SpeechPCMChunk],
+    playback: PCMPlaybackSession,
+    *,
+    barge_in: PlaybackBargeInController | None = None,
 ) -> PlaybackResult:
     """Play a Qwen stream chunk-by-chunk and always release its output device."""
 
     chunk_count = 0
+    if barge_in is not None:
+        barge_in.register(playback)
     try:
         async for chunk in chunks:
             if not playback.write(chunk):
                 break
             chunk_count += 1
     finally:
-        playback.close()
+        try:
+            playback.close()
+        finally:
+            if barge_in is not None:
+                barge_in.clear(playback)
     return PlaybackResult(chunk_count=chunk_count, cancelled=playback.cancelled)
 
 

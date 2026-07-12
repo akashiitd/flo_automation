@@ -88,8 +88,9 @@ uv run python main.py health
 The Qwen3-TTS cloned-voice worker is implemented as an optional loopback-only
 service. It keeps its MLX model loaded, provides complete-WAV and streamed-PCM
 speech endpoints, and has a tested LM Studio sentence-streaming bridge. Local
-Loopback playback and candidate-only no-echo isolation are validated; live
-FloCareer wiring and barge-in remain unimplemented.
+Loopback playback and candidate-only no-echo isolation are validated. The
+selected-device barge-in route is implemented; watched FloCareer room-audio
+validation remains pending.
 
 ### Milestone status matrix
 
@@ -104,11 +105,11 @@ FloCareer wiring and barge-in remain unimplemented.
 | 6. Question extraction | Implemented; watched revalidation pending | `questions-scan` reached 17 sequential cards; supplied `.clFESingleSugDet` HTML and automated coverage preserve multiline text; semantic coding detection and optional reversible Code Editor tab capture have fixture coverage |
 | 7. Code editor automation | Persistent-session integration implemented; watched validation pending | The verified card-scoped switch selector, exact question scoping, tab/state revalidation, and candidate-and-question approval are available only through `join --live --enable-code-editor-question`; language and code remain untouched |
 | 8. Offline session evaluation | Partial: per-question evaluation and preview implemented; final verdict/strengths/risks pending | `evaluate --session` validates saved questions plus candidate-only `source: system` transcript segments with explicit `question_id`, writes local `evaluation.json` and a non-submitted feedback preview, and never guesses turn boundaries. |
-| 9. Supervised interview controller | Partial pure state controller and simulation implemented; LangGraph scope and live wiring pending | `simulate-interview --session` stops at the first human approval by default; its explicit offline-only approval-assumption option records introduction/question/listen/evaluate/follow-up/next-question transitions. It has no browser or TTS side effects. |
+| 9. Supervised interview controller | Supervised local voice loop implemented; watched call validation pending | `supervise-voice-loop` requires disclosure confirmation plus exact operator approval for every candidate-visible Qwen prompt. It wires `CandidateTurnRouter`, selected-device Apple Speech, cancellable playback, per-answer local evaluation, follow-up choice, a persisted transition trace, and a non-submitted final preview without browser side effects. |
 | 10. Feedback autofill | Not started | Must remain behind preview and approval gates |
 | 11. Interview timer | Partial: pure warnings implemented; controller reactions and live integration pending | `timer-demo --minutes 25` deterministically emits the 15-, 10-, 5-, 2-, and 1-minute warnings plus the deadline without starting a call. |
 | 12. Local dashboard | Not started | Depends on stable backend operations |
-| 13. Qwen cloned live voice | Local Loopback playback, LM-to-playback, and source isolation validated; room audio and barge-in pending | Persistent local Qwen worker, private reference voice, health probe, text-to-WAV and streamed-PCM clients, sentence-streaming LM bridge, cancellable 24 kHz mono → 48 kHz stereo PCM playback, exact Loopback-device diagnostics, and LM sentence-to-playback wiring are implemented. Qwen health passed; direct Qwen playback wrote 11 chunks, LM Studio → Qwen wrote 28 chunks, and a 45-second Chrome capture had 11 candidate-only segments with no distinct Qwen phrase. |
+| 13. Qwen cloned live voice | Local Loopback playback, source isolation, and barge-in route wiring implemented; watched room-audio validation pending | Persistent local Qwen worker, private reference voice, health probe, text-to-WAV and streamed-PCM clients, sentence-streaming LM bridge, cancellable 24 kHz mono → 48 kHz stereo PCM playback, exact Loopback-device diagnostics, and LM sentence-to-playback wiring are implemented. `qwen-tts-barge-in-test` joins selected candidate-only callbacks to the active playback session, persists the transcript, and fails unless candidate speech cancels playback; a human must still validate the disclosed test call. |
 
 ### Next-session execution plan
 
@@ -124,17 +125,15 @@ loop with clear audio boundaries.
    `INTERVIEWER_TO_CALL` as the FloCareer microphone only for the watched test.
    Confirm candidate-only transcription and no Qwen echo before using any live
    interview.
-3. **Wire and validate barge-in in the live loop.** The cancellable playback
-   session now has a thread-safe `PlaybackBargeInController` that cancels only
-   on a non-empty `source: system` segment. Connect it to the selected-device
-   callback only after the Qwen echo-isolation test passes, then validate it in
-   a disclosed test call.
-4. **Wire the supervised interview controller to the live loop.** The pure
-   state machine now models the sequence
+3. **Validate the wired barge-in route.** `qwen-tts-barge-in-test` connects
+   selected-device Apple Speech callbacks to a thread-safe active playback
+   session and cancels only on a non-empty `source: system` segment. Validate
+   it in a disclosed test call before any interview use.
+4. **Validate the supervised voice loop.** `supervise-voice-loop` now models
    `introduction → ordered question → candidate turn → transcript → rubric
-   evaluation → optional follow-up → next question`; connect its explicit
-   question boundaries to the transcript adapter, while preserving a human
-   approval boundary for candidate-visible prompts and feedback.
+   evaluation → optional follow-up → next question`, with exact operator prompt
+   approvals and explicit transcript boundaries. Validate it in a disclosed
+   watched call before relying on it.
 5. **Only then add session aggregation, timer, and feedback preview.** Keep
    feedback submission and `FINISH` outside automation.
 

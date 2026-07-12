@@ -70,6 +70,111 @@ def test_adapter_uses_system_audio_only_and_saves_callbacks(tmp_path: Path) -> N
     )
 
 
+def test_adapter_persists_question_bound_callback_segments(tmp_path: Path) -> None:
+    transcriber_root = tmp_path / "Meeting_transcriber_with_LLM"
+    (transcriber_root / "src").mkdir(parents=True)
+    (transcriber_root / "src" / "realtime_transcriber.py").touch()
+
+    class FakeTranscriber:
+        def start(self) -> bool:
+            callback = captured_options["callback"]
+            callback(
+                SimpleNamespace(
+                    text="Candidate answer",
+                    start_time=0.5,
+                    end_time=2.0,
+                    speaker="Other",
+                    source="system",
+                    confidence=0.94,
+                    timestamp=datetime(2026, 7, 10, 12, 0, tzinfo=UTC),
+                )
+            )
+            return True
+
+        def stop(self) -> list[object]:
+            return []
+
+    captured_options: dict[str, object] = {}
+
+    def factory(**options: object) -> tuple[FakeTranscriber, None]:
+        captured_options.update(options)
+        return FakeTranscriber(), None
+
+    settings = Settings.load(
+        project_root=tmp_path,
+        environ={
+            "MEETING_TRANSCRIBER_PATH": str(transcriber_root),
+            "RUNS_DIR": str(tmp_path / "runs"),
+            "TRANSCRIPTION_BACKEND": "apple-speech",
+        },
+    )
+    adapter = AppleSpeechAdapter(
+        settings,
+        session_id="question_bound",
+        transcriber_factory=factory,
+        question_id_provider=lambda: 9,
+    )
+
+    adapter.start()
+    summary = adapter.stop()
+
+    payload = __import__("json").loads(summary.json_path.read_text(encoding="utf-8"))
+    assert payload["segments"][0]["question_id"] == 9
+
+
+def test_adapter_drops_unbound_segments_when_a_supervised_turn_requires_a_boundary(
+    tmp_path: Path,
+) -> None:
+    transcriber_root = tmp_path / "Meeting_transcriber_with_LLM"
+    (transcriber_root / "src").mkdir(parents=True)
+    (transcriber_root / "src" / "realtime_transcriber.py").touch()
+    captured_options: dict[str, object] = {}
+
+    class FakeTranscriber:
+        def start(self) -> bool:
+            callback = captured_options["callback"]
+            callback(
+                SimpleNamespace(
+                    text="Unbound audio",
+                    start_time=0.5,
+                    end_time=2.0,
+                    speaker="Other",
+                    source="system",
+                    confidence=0.94,
+                    timestamp=datetime(2026, 7, 10, 12, 0, tzinfo=UTC),
+                )
+            )
+            return True
+
+        def stop(self) -> list[object]:
+            return []
+
+    def factory(**options: object) -> tuple[FakeTranscriber, None]:
+        captured_options.update(options)
+        return FakeTranscriber(), None
+
+    settings = Settings.load(
+        project_root=tmp_path,
+        environ={
+            "MEETING_TRANSCRIBER_PATH": str(transcriber_root),
+            "RUNS_DIR": str(tmp_path / "runs"),
+            "TRANSCRIPTION_BACKEND": "apple-speech",
+        },
+    )
+    adapter = AppleSpeechAdapter(
+        settings,
+        session_id="question_bound",
+        transcriber_factory=factory,
+        question_id_provider=lambda: None,
+        require_question_boundary=True,
+    )
+
+    adapter.start()
+    summary = adapter.stop()
+
+    assert summary.segment_count == 0
+
+
 def test_adapter_blocks_generic_system_audio_when_factory_cannot_select_device(
     tmp_path: Path,
 ) -> None:

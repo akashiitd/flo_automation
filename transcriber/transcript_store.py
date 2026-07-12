@@ -33,6 +33,7 @@ class TranscriptRecord:
     source: str
     confidence: float
     timestamp: str
+    question_id: int | None = None
 
 
 class TranscriptStore:
@@ -59,7 +60,9 @@ class TranscriptStore:
         with self._lock:
             return len(self._segments)
 
-    def append(self, segment: TranscriptSegmentLike) -> None:
+    def append(
+        self, segment: TranscriptSegmentLike, *, question_id: int | None = None
+    ) -> None:
         text = str(segment.text).strip()
         if not text:
             return
@@ -77,6 +80,7 @@ class TranscriptStore:
             source=str(segment.source or "system"),
             confidence=float(segment.confidence or 0.0),
             timestamp=timestamp_text,
+            question_id=question_id,
         )
         with self._lock:
             self._segments.append(record)
@@ -92,7 +96,9 @@ class TranscriptStore:
             "session_id": self.session_id,
             "started_at": self.started_at,
             "updated_at": datetime.now(UTC).isoformat(),
-            "segments": [asdict(segment) for segment in self._segments],
+            "segments": [
+                self._serialize_segment(segment) for segment in self._segments
+            ],
         }
         json_temp = self.json_path.with_suffix(".json.tmp")
         json_temp.write_text(
@@ -114,3 +120,10 @@ class TranscriptStore:
             encoding="utf-8",
         )
         text_temp.replace(self.text_path)
+
+    @staticmethod
+    def _serialize_segment(segment: TranscriptRecord) -> dict[str, object]:
+        payload = asdict(segment)
+        if payload["question_id"] is None:
+            del payload["question_id"]
+        return payload

@@ -6,7 +6,12 @@ import re
 from collections.abc import AsyncIterable, AsyncIterator, Callable
 from typing import Protocol
 
-from tts.audio_output import PCMPlaybackSession, PlaybackResult, play_pcm_stream
+from tts.audio_output import (
+    PCMPlaybackSession,
+    PlaybackBargeInController,
+    PlaybackResult,
+    play_pcm_stream,
+)
 from tts.schemas import SpeechAudio, SpeechPCMChunk
 
 
@@ -74,6 +79,7 @@ async def play_provider_pcm(
     playback: PCMPlaybackSession,
     *,
     on_chunk: Callable[[SpeechPCMChunk], None] | None = None,
+    barge_in: PlaybackBargeInController | None = None,
 ) -> PlaybackResult:
     """Play completed LLM sentences as Qwen emits their PCM chunks."""
 
@@ -83,7 +89,7 @@ async def play_provider_pcm(
                 on_chunk(chunk)
             yield chunk
 
-    return await play_pcm_stream(observe_chunks(), playback)
+    return await play_pcm_stream(observe_chunks(), playback, barge_in=barge_in)
 
 
 async def speak_provider_stream(

@@ -29,3 +29,51 @@ def test_session_commands_are_exposed_as_offline_file_workflows() -> None:
         parser.parse_args(["simulate-interview", "--session", "runs/example"]).command
         == "simulate-interview"
     )
+
+
+def test_barge_in_route_test_requires_an_explicit_loopback_confirmation() -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(
+        [
+            "qwen-tts-barge-in-test",
+            "--text",
+            "Hello",
+            "--confirm-selected-loopback-route",
+        ]
+    )
+
+    assert args.command == "qwen-tts-barge-in-test"
+    assert args.confirm_selected_loopback_route is True
+
+
+def test_barge_in_route_test_fails_closed_without_loopback_confirmation(
+    tmp_path: Path, capsys: object
+) -> None:
+    exit_code = cli.main(
+        ["qwen-tts-barge-in-test", "--text", "Hello"],
+        project_root=tmp_path,
+        environ={},
+    )
+
+    assert exit_code == 2
+    assert "requires --confirm-selected-loopback-route" in capsys.readouterr().err
+
+
+def test_supervised_voice_loop_requires_disclosure_confirmation(
+    tmp_path: Path, capsys: object
+) -> None:
+    exit_code = cli.main(
+        [
+            "supervise-voice-loop",
+            "--session",
+            "runs/example",
+            "--candidate",
+            "Candidate Alpha",
+        ],
+        project_root=tmp_path,
+        environ={},
+    )
+
+    assert exit_code == 2
+    assert "requires --confirm-disclosed-supervision" in capsys.readouterr().err

@@ -33,6 +33,7 @@ from evaluator.session_evaluation import (
     SessionEvaluationError,
     evaluate_session,
     load_session_inputs,
+    load_session_questions,
 )
 from llm.lmstudio_provider import LMStudioProvider
 from llm.openrouter_provider import OpenRouterProvider
@@ -47,12 +48,15 @@ from llm.schemas import (
 from llm.usage_tracker import UsageTracker
 from transcriber.apple_speech_adapter import AppleSpeechAdapter
 from orchestrator.graph import InterviewController
+from orchestrator.live_loop import CandidateTurnRouter
+from orchestrator.state import InterviewPhase
 from orchestrator.timer import InterviewTimer
 from tts.qwen_client import QwenTTSClient, QwenTTSError
 from tts.schemas import SpeechPCMChunk
 from tts.audio_output import (
     PCMPlaybackError,
     PCMPlaybackSession,
+    PlaybackBargeInController,
     SoundDeviceOutputBackend,
     play_pcm_stream,
 )
@@ -417,6 +421,282 @@ async def _qwen_tts_playback_test(settings: Settings, *, text: str) -> int:
     print(f"Output device: {settings.interviewer_audio_output_device}")
     print(f"Played Qwen PCM chunks: {result.chunk_count}")
     print(f"Audio WAV: {audio_path}")
+    return 0
+
+
+async def _qwen_tts_barge_in_test(settings: Settings, *, text: str) -> int:
+    """Validate selected-device capture can cancel one local Qwen playback run."""
+
+    session_id = f"qwen_barge_in_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    client = QwenTTSClient(
+        settings.qwen_tts_base_url,
+        timeout_seconds=settings.qwen_tts_timeout_seconds,
+    )
+    barge_in = PlaybackBargeInController()
+    adapter: AppleSpeechAdapter | None = None
+    raw_pcm: list[bytes] = []
+    sample_rate: int | None = None
+
+    def capture_chunk(chunk: SpeechPCMChunk) -> None:
+        nonlocal sample_rate
+        if sample_rate is None:
+            sample_rate = chunk.sample_rate
+        elif chunk.sample_rate != sample_rate:
+            raise QwenTTSError("Qwen speech stream changed sample rates")
+        raw_pcm.append(chunk.audio)
+
+    def observe_candidate_segment(segment: object) -> None:
+        cancelled = barge_in.on_transcript_segment(segment)
+        source = str(getattr(segment, "source", "unknown"))
+        text_value = str(getattr(segment, "text", "")).strip()
+        print(f"[{source}] {text_value}", flush=True)
+        if cancelled:
+            print("Candidate speech cancelled active Qwen playback", flush=True)
+
+    async def capture_and_play() -> AsyncIterable[SpeechPCMChunk]:
+        async for chunk in client.stream_synthesize(text):
+            capture_chunk(chunk)
+            yield chunk
+
+    try:
+        adapter = AppleSpeechAdapter(
+            settings,
+            session_id=session_id,
+            on_segment=observe_candidate_segment,
+        )
+        if not adapter.start():
+            raise PCMPlaybackError("Apple Speech did not start on CANDIDATE_ONLY")
+        backend = SoundDeviceOutputBackend()
+        playback = PCMPlaybackSession(
+            backend.open_output(settings.interviewer_audio_output_device)
+        )
+        result = await play_pcm_stream(capture_and_play(), playback, barge_in=barge_in)
+    except (PCMPlaybackError, QwenTTSError, ValueError, RuntimeError) as error:
+        print(f"Qwen barge-in test failed: {error}", file=sys.stderr)
+        return 1
+    finally:
+        await client.aclose()
+        summary = adapter.stop() if adapter is not None else None
+
+    if sample_rate is None or not raw_pcm:
+        print("Qwen barge-in test failed: no PCM was received", file=sys.stderr)
+        return 1
+    audio_path = settings.runs_dir / session_id / "speech.wav"
+    _write_pcm_wav(audio_path, pcm=b"".join(raw_pcm), sample_rate=sample_rate)
+    print(f"Output device: {settings.interviewer_audio_output_device}")
+    print(f"Candidate input device: {settings.candidate_audio_input_device}")
+    print(f"Played Qwen PCM chunks: {result.chunk_count}")
+    print(f"Playback cancelled by candidate audio: {result.cancelled}")
+    print(f"Audio WAV: {audio_path}")
+    assert summary is not None
+    print(f"Transcript JSON: {summary.json_path}")
+    if not result.cancelled:
+        print(
+            "Validation incomplete: no non-empty candidate-only segment cancelled "
+            "the Qwen playback",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        "Safety: this test does not open FloCareer or change browser, feedback, "
+        "hang-up, or FINISH controls"
+    )
+    return 0
+
+
+def _require_supervisor_token(expected: str) -> None:
+    print(f"Type exactly: {expected}")
+    try:
+        entered = input("Approval: ").strip()
+    except (EOFError, KeyboardInterrupt) as error:
+        raise RuntimeError("supervised voice loop cancelled by operator") from error
+    if entered != expected:
+        raise RuntimeError("supervised voice loop approval did not match")
+
+
+def _choose_supervisor_token(*allowed: str) -> str:
+    print("Type exactly one of:")
+    for token in allowed:
+        print(f"- {token}")
+    try:
+        entered = input("Approval: ").strip()
+    except (EOFError, KeyboardInterrupt) as error:
+        raise RuntimeError("supervised voice loop cancelled by operator") from error
+    if entered not in allowed:
+        raise RuntimeError("supervised voice loop approval did not match")
+    return entered
+
+
+async def _speak_supervised_prompt(
+    settings: Settings,
+    speech_client: QwenTTSClient,
+    barge_in: PlaybackBargeInController,
+    prompt: str,
+) -> None:
+    backend = SoundDeviceOutputBackend()
+    playback = PCMPlaybackSession(
+        backend.open_output(settings.interviewer_audio_output_device)
+    )
+    result = await play_pcm_stream(
+        speech_client.stream_synthesize(prompt), playback, barge_in=barge_in
+    )
+    print(f"Played Qwen PCM chunks: {result.chunk_count}")
+    if result.cancelled:
+        print("Candidate speech cancelled the prompt playback")
+
+
+async def _supervise_voice_loop(
+    settings: Settings,
+    *,
+    session_path: Path,
+    candidate_name: str,
+    model_class: ModelClass,
+) -> int:
+    """Run a human-approved local voice loop without browser-side effects."""
+
+    try:
+        questions = load_session_questions(session_path)
+    except SessionEvaluationError as error:
+        print(f"Supervised voice loop failed: {error}", file=sys.stderr)
+        return 1
+
+    controller = InterviewController(candidate_name=candidate_name, questions=questions)
+    barge_in = PlaybackBargeInController()
+    router = CandidateTurnRouter(controller, barge_in)
+    speech_client = QwenTTSClient(
+        settings.qwen_tts_base_url,
+        timeout_seconds=settings.qwen_tts_timeout_seconds,
+    )
+    provider = LMStudioProvider(settings)
+    adapter: AppleSpeechAdapter | None = None
+    usage_tracker = UsageTracker(session_path / "llm_usage.jsonl")
+
+    def route_candidate_segment(segment: object) -> None:
+        router.on_transcript_segment(segment)
+
+    try:
+        print("Browser controls, feedback, hang-up, and FINISH are not available here.")
+        print("The operator must approve every candidate-visible Qwen prompt.")
+        introduction = controller.start()
+        _require_supervisor_token("SPEAK INTRODUCTION")
+        controller.approve_candidate_prompt()
+        await _speak_supervised_prompt(settings, speech_client, barge_in, introduction)
+
+        adapter = AppleSpeechAdapter(
+            settings,
+            session_id=session_path.name,
+            on_segment=route_candidate_segment,
+            question_id_provider=lambda: router.active_question_id,
+            require_question_boundary=True,
+        )
+        if not adapter.start():
+            raise RuntimeError("Apple Speech did not start on CANDIDATE_ONLY")
+
+        while controller.state.phase is not InterviewPhase.DONE:
+            if controller.state.phase is not InterviewPhase.HUMAN_APPROVAL:
+                raise RuntimeError(
+                    f"unexpected controller phase {controller.state.phase}"
+                )
+            question_id = controller.state.questions[
+                controller.state.current_question_index
+            ].id
+            _require_supervisor_token(f"SPEAK QUESTION {question_id}")
+            prompt = controller.approve_candidate_prompt()
+            await _speak_supervised_prompt(settings, speech_client, barge_in, prompt)
+            _require_supervisor_token(f"END ANSWER {question_id}")
+            answer = controller.complete_answer()
+            question = controller.state.questions[
+                controller.state.current_question_index
+            ]
+            generation = await evaluate_answer(
+                EvaluationInput(
+                    question_id=question.id,
+                    question=question.question_text,
+                    ideal_answer=question.ideal_answer,
+                    candidate_answer=answer,
+                ),
+                provider,
+                model_class=model_class,
+                usage_tracker=usage_tracker,
+            )
+            score = QuestionEvaluation.model_validate(generation.output)
+            print(f"Question {question_id} draft score: {score.score}/5")
+            print(f"Suggested follow-up: {score.follow_up}")
+            controller.record_evaluation(follow_up=score.follow_up)
+
+            choice = _choose_supervisor_token(
+                f"SKIP FOLLOW-UP {question_id}",
+                f"SPEAK FOLLOW-UP {question_id}",
+            )
+            if choice == f"SPEAK FOLLOW-UP {question_id}":
+                follow_up = controller.prepare_follow_up()
+                _require_supervisor_token(f"SPEAK FOLLOW-UP {question_id}")
+                controller.approve_candidate_prompt()
+                await _speak_supervised_prompt(
+                    settings, speech_client, barge_in, follow_up
+                )
+                _require_supervisor_token(f"END FOLLOW-UP {question_id}")
+                follow_up_answer = controller.complete_answer()
+                await evaluate_answer(
+                    EvaluationInput(
+                        question_id=question.id,
+                        question=question.question_text,
+                        ideal_answer=question.ideal_answer,
+                        candidate_answer=follow_up_answer,
+                    ),
+                    provider,
+                    model_class=model_class,
+                    usage_tracker=usage_tracker,
+                )
+                controller.record_evaluation(follow_up=None)
+            elif choice == f"SKIP FOLLOW-UP {question_id}":
+                controller.skip_optional_follow_up()
+            else:
+                raise RuntimeError("follow-up choice did not match an approved token")
+
+            controller.prepare_next_question()
+
+        summary = adapter.stop()
+        adapter = None
+        evaluation = await evaluate_session(
+            load_session_inputs(session_path), provider, model_class=model_class
+        )
+        trace_path = session_path / "controller_transitions.json"
+        trace_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "supervised_local_voice_loop": True,
+                    "final_phase": str(controller.state.phase),
+                    "transitions": [
+                        asdict(transition) for transition in controller.transitions
+                    ],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except (
+        PCMPlaybackError,
+        QwenTTSError,
+        RuntimeError,
+        SessionEvaluationError,
+        TimeoutError,
+        ValueError,
+    ) as error:
+        print(f"Supervised voice loop failed: {error}", file=sys.stderr)
+        return 1
+    finally:
+        if adapter is not None:
+            adapter.stop()
+        await provider.aclose()
+        await speech_client.aclose()
+
+    print(f"Transcript JSON: {summary.json_path}")
+    print(f"Controller trace: {trace_path}")
+    print(f"Evaluation JSON: {evaluation.evaluation_path}")
+    print(f"Feedback preview (not submitted): {evaluation.feedback_preview_path}")
     return 0
 
 
@@ -1088,6 +1368,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="play streamed Qwen PCM through the configured interviewer Loopback bus",
     )
     qwen_tts_playback_test.add_argument("--text", required=True)
+    qwen_tts_barge_in_test = subcommands.add_parser(
+        "qwen-tts-barge-in-test",
+        help="test candidate-only capture cancelling local Qwen playback on Loopback",
+    )
+    qwen_tts_barge_in_test.add_argument("--text", required=True)
+    qwen_tts_barge_in_test.add_argument(
+        "--confirm-selected-loopback-route",
+        action="store_true",
+        help="confirm this is a disclosed, supervised test of the selected Loopback route",
+    )
+    supervise = subcommands.add_parser(
+        "supervise-voice-loop",
+        help="run an operator-approved local Qwen, candidate-capture, and evaluation loop",
+    )
+    supervise.add_argument(
+        "--session", required=True, help="session directory under runs/"
+    )
+    supervise.add_argument("--candidate", required=True)
+    supervise.add_argument("--model-class", choices=("fast", "deep"), default="deep")
+    supervise.add_argument(
+        "--confirm-disclosed-supervision",
+        action="store_true",
+        help="confirm candidate disclosure/consent and a supervised selected-Loopback route",
+    )
     llm_speak_test = subcommands.add_parser(
         "llm-speak-test",
         help="stream a short local LM Studio reply into the local Qwen voice service",
@@ -1237,6 +1541,34 @@ def main(
         return _audio_devices(settings)
     if args.command == "qwen-tts-playback-test":
         return asyncio.run(_qwen_tts_playback_test(settings, text=args.text))
+    if args.command == "qwen-tts-barge-in-test":
+        if not args.confirm_selected_loopback_route:
+            print(
+                "qwen-tts-barge-in-test requires --confirm-selected-loopback-route",
+                file=sys.stderr,
+            )
+            return 2
+        return asyncio.run(_qwen_tts_barge_in_test(settings, text=args.text))
+    if args.command == "supervise-voice-loop":
+        if not args.confirm_disclosed_supervision:
+            print(
+                "supervise-voice-loop requires --confirm-disclosed-supervision",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            session_path = _session_path(settings, args.session)
+        except SessionEvaluationError as error:
+            print(f"Supervised voice loop failed: {error}", file=sys.stderr)
+            return 2
+        return asyncio.run(
+            _supervise_voice_loop(
+                settings,
+                session_path=session_path,
+                candidate_name=args.candidate,
+                model_class=cast(ModelClass, args.model_class),
+            )
+        )
     if args.command == "llm-speak-test":
         return asyncio.run(
             _llm_speak_test(

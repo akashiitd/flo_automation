@@ -45,6 +45,8 @@ class AppleSpeechAdapter:
         session_id: str,
         transcriber_factory: TranscriberFactory | None = None,
         on_segment: Callable[[object], None] | None = None,
+        question_id_provider: Callable[[], int | None] | None = None,
+        require_question_boundary: bool = False,
     ) -> None:
         if not settings.transcribe_system_audio:
             raise ValueError(
@@ -62,6 +64,8 @@ class AppleSpeechAdapter:
         self.store = TranscriptStore(settings.runs_dir, session_id)
         self._factory = transcriber_factory
         self._on_segment = on_segment
+        self._question_id_provider = question_id_provider
+        self._require_question_boundary = require_question_boundary
         self._transcriber: RealtimeTranscriberLike | None = None
         self._running = False
 
@@ -89,7 +93,14 @@ class AppleSpeechAdapter:
         return factory
 
     def _handle_segment(self, segment: object) -> None:
-        self.store.append(cast(TranscriptSegmentLike, segment))
+        question_id = (
+            self._question_id_provider()
+            if self._question_id_provider is not None
+            else None
+        )
+        if self._require_question_boundary and question_id is None:
+            return
+        self.store.append(cast(TranscriptSegmentLike, segment), question_id=question_id)
         if self._on_segment is not None:
             try:
                 self._on_segment(segment)

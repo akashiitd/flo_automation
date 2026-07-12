@@ -28,7 +28,8 @@ The complete roadmap and safety constraints are documented in
 | Local Qwen PCM playback / Loopback bus diagnostics | Implemented and live-validated | `uv run python main.py qwen-tts-playback-test --text "..."` |
 | Candidate-only Apple Speech capture | Local Chrome capture and Qwen no-echo isolation validated; external helper remains an uncommitted dependency | `uv run python main.py listen-test --seconds 60` |
 | Offline session evaluation | Partial per-question evaluation; requires explicit question-bound transcript segments | `uv run python main.py evaluate --session runs/<session>` |
-| Interview turn controller and barge-in | Partial simulation/controller; live listener/playback wiring remains pending | `uv run python main.py simulate-interview --session runs/<session>` |
+| Candidate-only barge-in route test | Implemented; supervised Loopback validation remains required | `uv run python main.py qwen-tts-barge-in-test --text "..." --confirm-selected-loopback-route` |
+| Supervised local voice loop | Implemented; manually joined/disclosed call validation remains required | `uv run python main.py supervise-voice-loop --session runs/<session> --candidate "Exact Name" --confirm-disclosed-supervision` |
 | Interview timer | Pure warning simulation implemented; controller and live-call reactions remain pending | `uv run python main.py timer-demo --minutes 25` |
 | Read-only FloCareer dashboard scan | Implemented | `uv run python main.py browser-scan` |
 | Guarded candidate join discovery | Implemented and live-validated | `uv run python main.py join --candidate "Exact Name" --dry-run` |
@@ -255,8 +256,43 @@ The PCM commands assemble a WAV artifact for inspection. In addition,
 `INTERVIEWER_TO_CALL` as Qwen emits PCM, while retaining the combined WAV
 artifact. A local Loopback isolation test passed: Chrome speech was captured
 on `CANDIDATE_ONLY` while a distinct Qwen phrase on `INTERVIEWER_TO_CALL` was
-absent from the transcript. Live FloCareer wiring and barge-in remain separate
-work.
+absent from the transcript. The selected-device barge-in route is now wired
+and can be exercised with an explicit, browser-free supervised test:
+
+```bash
+uv run python main.py qwen-tts-barge-in-test \
+  --text "Please explain your approach." \
+  --confirm-selected-loopback-route
+```
+
+It starts Apple Speech on `CANDIDATE_ONLY`, sends Qwen PCM only to
+`INTERVIEWER_TO_CALL`, and stops playback when it receives a non-empty
+candidate-only segment. Have the disclosed test participant speak during the
+Qwen prompt: the command fails if no candidate-only segment cancels playback.
+It saves its WAV and transcript locally. It never opens FloCareer or changes
+browser controls; confirming that the remote participant can hear the route
+still requires a watched, disclosed test call.
+
+### 6. Run the supervised local voice loop
+
+After a human has manually joined a disclosed call and selected
+`INTERVIEWER_TO_CALL` as its microphone, this command uses the saved
+`questions.json` to ask only operator-approved prompts. It records only
+question-bound candidate-only segments, cancels Qwen when the candidate speaks,
+evaluates each answer locally, and writes a final local feedback preview. It
+does not operate the browser, feedback fields, hang-up, or `FINISH`.
+
+```bash
+uv run python main.py supervise-voice-loop \
+  --session runs/<session> \
+  --candidate "Exact Candidate Name" \
+  --confirm-disclosed-supervision
+```
+
+At each prompt, type the exact approval token displayed by the command. For a
+follow-up, choose either its displayed `SPEAK FOLLOW-UP <id>` token or `SKIP
+FOLLOW-UP <id>`. Speaking a follow-up requires a second exact
+`SPEAK FOLLOW-UP <id>` confirmation; no prompt is spoken without that approval.
 
 ### Evaluate a recorded, question-bound session offline
 
@@ -569,10 +605,11 @@ The next guarded milestones are:
    worktree without staging its unrelated user changes.
 2. Revalidate the guarded Join, question scan, and code-editor flow while a
    human watches a scheduled interview.
-3. Wire candidate-only transcript callbacks to active Qwen playback for
-   barge-in, then validate that candidate speech stops playback.
-4. Wire the stateful controller to live question boundaries, transcript turns,
-   evaluation, and explicitly approved candidate-visible prompts.
+3. Run `qwen-tts-barge-in-test` in a disclosed watched call to validate the
+   wired candidate-only route and confirm that candidate speech stops playback.
+4. Validate the stateful controller in a disclosed watched call: question
+   boundaries, transcript turns, evaluation, and each operator-approved
+   candidate-visible prompt.
 5. Only after those steps, run a supervised test call and add session verdict,
    timer reactions, and human-reviewed feedback preview/autofill.
 

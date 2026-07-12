@@ -39,3 +39,25 @@ def test_store_persists_system_audio_segments_immediately(tmp_path: Path) -> Non
         encoding="utf-8"
     )
     assert store.segment_count == 1
+
+
+def test_store_persists_the_explicit_question_boundary_for_candidate_audio(
+    tmp_path: Path,
+) -> None:
+    store = TranscriptStore(tmp_path / "runs", "question_bound")
+
+    store.append(
+        SimpleNamespace(
+            text="I would cap retries.",
+            start_time=1.25,
+            end_time=3.5,
+            speaker="Other",
+            source="system",
+            confidence=0.91,
+            timestamp=datetime(2026, 7, 10, 12, 0, tzinfo=UTC),
+        ),
+        question_id=4,
+    )
+
+    payload = json.loads(store.json_path.read_text(encoding="utf-8"))
+    assert payload["segments"][0]["question_id"] == 4

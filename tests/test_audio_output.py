@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import struct
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 
 import pytest
 
 from tts.audio_output import (
     PCMPlaybackError,
     PCMPlaybackSession,
+    PlaybackBargeInController,
     SoundDeviceOutputBackend,
     play_pcm_stream,
 )
@@ -174,6 +176,65 @@ def test_provider_pcm_playback_starts_before_later_lm_text_arrives() -> None:
 
         assert result.chunk_count == 2
         assert output.closed is True
+
+    asyncio.run(run())
+
+
+def test_provider_pcm_playback_registers_candidate_barge_in_for_its_active_stream() -> (
+    None
+):
+    first_written = asyncio.Event()
+    release_second_chunk = asyncio.Event()
+
+    async def text_chunks() -> AsyncIterator[str]:
+        yield "One sentence."
+
+    class StreamingSpeechClient:
+        async def stream_synthesize(self, text: str) -> AsyncIterator[SpeechPCMChunk]:
+            yield SpeechPCMChunk(
+                audio=struct.pack("<h", 1),
+                sample_rate=24_000,
+                duration_seconds=1 / 24_000,
+            )
+            await release_second_chunk.wait()
+            yield SpeechPCMChunk(
+                audio=struct.pack("<h", 2),
+                sample_rate=24_000,
+                duration_seconds=1 / 24_000,
+            )
+
+    class SignallingOutputStream(FakeOutputStream):
+        def write(self, pcm: bytes) -> None:
+            super().write(pcm)
+            first_written.set()
+
+    async def run() -> None:
+        output = SignallingOutputStream()
+        barge_in = PlaybackBargeInController()
+        task = asyncio.create_task(
+            play_provider_pcm(
+                text_chunks(),
+                StreamingSpeechClient(),
+                PCMPlaybackSession(output),
+                barge_in=barge_in,
+            )
+        )
+
+        await first_written.wait()
+        assert barge_in.on_transcript_segment(
+            SimpleNamespace(text="I have an answer.", source="system")
+        )
+        release_second_chunk.set()
+
+        result = await task
+        assert result.chunk_count == 1
+        assert result.cancelled is True
+        assert (
+            barge_in.on_transcript_segment(
+                SimpleNamespace(text="After playback", source="system")
+            )
+            is False
+        )
 
     asyncio.run(run())
 

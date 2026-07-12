@@ -64,8 +64,8 @@ def _require_text(value: object, *, field: str) -> str:
     return text
 
 
-def load_session_inputs(session_dir: Path) -> SessionInputs:
-    """Load only candidate-only segments that have a recorded question boundary."""
+def load_session_questions(session_dir: Path) -> tuple[InterviewQuestion, ...]:
+    """Load the saved, read-only question set before a supervised session starts."""
 
     session = session_dir.resolve()
     raw_questions = _read_json_object(session / "questions.json")
@@ -107,6 +107,15 @@ def load_session_inputs(session_dir: Path) -> SessionInputs:
     question_ids = {question.id for question in questions}
     if len(question_ids) != len(questions):
         raise SessionEvaluationError("questions.json contains duplicate question IDs")
+    return tuple(questions)
+
+
+def load_session_inputs(session_dir: Path) -> SessionInputs:
+    """Load only candidate-only segments that have a recorded question boundary."""
+
+    session = session_dir.resolve()
+    questions = load_session_questions(session)
+    question_ids = {question.id for question in questions}
 
     raw_transcript = _read_json_object(session / "transcript.json")
     if not isinstance(raw_transcript, dict):
@@ -155,7 +164,7 @@ def load_session_inputs(session_dir: Path) -> SessionInputs:
         )
     return SessionInputs(
         session_dir=session,
-        questions=tuple(questions),
+        questions=questions,
         answers_by_question_id={key: " ".join(value) for key, value in answers.items()},
     )
 
