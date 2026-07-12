@@ -875,6 +875,38 @@ class FloCareerPage:
             self.page.wait_for_timeout(250)
         raise JoinWorkflowError("Timed out waiting for the interview question panel")
 
+    def extract_job_description(self) -> str:
+        """Read FloCareer's dedicated Job Description panel without form edits."""
+
+        container = self.page.locator("#divJDContainer")
+        visible = self._visible_locators(container)
+        if not visible:
+            tab = self.page.locator("#liJD")
+            tabs = self._visible_locators(tab)
+            if len(tabs) != 1:
+                raise JoinWorkflowError(
+                    f"Expected one visible Job Description tab; found {len(tabs)}"
+                )
+            tabs[0].click()
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                visible = self._visible_locators(container)
+                if len(visible) == 1 and visible[0].inner_text().strip():
+                    break
+                self.page.wait_for_timeout(100)
+        if len(visible) != 1:
+            raise JoinWorkflowError(
+                f"Expected one visible Job Description panel; found {len(visible)}"
+            )
+        text = "\n".join(
+            _clean_text(line)
+            for line in visible[0].inner_text().splitlines()
+            if _clean_text(line)
+        )
+        if not text:
+            raise JoinWorkflowError("Job Description panel contains no readable text")
+        return text
+
     @staticmethod
     def _parse_question_snapshot(snapshot: dict[str, object]) -> ExtractedQuestion:
         raw = str(snapshot.get("text") or "")

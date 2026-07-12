@@ -80,6 +80,7 @@ class QuestionScanResult:
     candidate_identifier: str
     questions: tuple[ExtractedQuestion, ...]
     questions_path: Path
+    job_description_path: Path
     code_editor_dom_observations: tuple[CodeEditorDomObservation, ...]
     code_editor_dom_path: Path
     screenshot_path: Path
@@ -92,6 +93,7 @@ class QuestionScanPage(LaunchWorkflowPage, Protocol):
     def click_consent_ok(self) -> None: ...
     def wait_for_question_panel(self) -> None: ...
     def extract_questions(self) -> list[ExtractedQuestion]: ...
+    def extract_job_description(self) -> str: ...
     def inspect_code_editor_dom(
         self,
         *,
@@ -108,6 +110,22 @@ def _write_questions(path: Path, questions: tuple[ExtractedQuestion, ...]) -> No
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def _write_job_description(path: Path, description: str) -> None:
+    payload = {
+        "schema_version": 1,
+        "read_only": True,
+        "source": "FloCareer Job Description tab",
+        "description": description,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.touch(mode=0o600, exist_ok=True)
+    temporary.chmod(0o600)
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    path.chmod(0o600)
 
 
 def _write_code_editor_dom(
@@ -218,6 +236,17 @@ def run_question_scan(
         )
 
     try:
+        job_description = page.extract_job_description().strip()
+    except Exception as error:
+        diagnostic = page.capture_screenshot(
+            screenshots_dir, "job_description_extract_error"
+        )
+        detail = str(error) or type(error).__name__
+        raise JoinWorkflowError(f"{detail}. Screenshot: {diagnostic}") from error
+    if not job_description:
+        raise JoinWorkflowError("Job description extraction returned empty text")
+
+    try:
         coding_question_ids = tuple(
             question.id for question in questions if question.has_code_editor
         )
@@ -253,6 +282,8 @@ def run_question_scan(
     screenshot = page.capture_screenshot(screenshots_dir, "questions_expanded")
     questions_path = session_dir / "questions.json"
     _write_questions(questions_path, questions)
+    job_description_path = session_dir / "job_description.json"
+    _write_job_description(job_description_path, job_description)
     code_editor_dom_path = session_dir / "code_editor_dom.json"
     _write_code_editor_dom(
         code_editor_dom_path,
@@ -263,6 +294,7 @@ def run_question_scan(
         candidate_identifier=identifier,
         questions=questions,
         questions_path=questions_path,
+        job_description_path=job_description_path,
         code_editor_dom_observations=code_editor_dom_observations,
         code_editor_dom_path=code_editor_dom_path,
         screenshot_path=screenshot,

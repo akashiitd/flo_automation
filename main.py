@@ -30,6 +30,11 @@ from browser.playwright_controller import (
     scan_dashboard,
 )
 from evaluator.scoring import evaluate_answer
+from evaluator.job_description import (
+    JobDescriptionError,
+    answer_job_description_question,
+    load_job_description,
+)
 from evaluator.session_evaluation import (
     SessionEvaluationError,
     evaluate_session,
@@ -1262,6 +1267,7 @@ def _questions_scan(
         f"Code editor DOM capture: {'complete' if capture_complete else 'incomplete'}"
     )
     print(f"Questions JSON: {result.questions_path}")
+    print(f"Job description: {result.job_description_path}")
     print(f"Code editor DOM: {result.code_editor_dom_path}")
     print(f"Expanded screenshot: {result.screenshot_path}")
     print(f"Action log: {result.action_log_path}")
@@ -1304,6 +1310,41 @@ async def _evaluate_saved_session(
     print(
         "Safety: no browser controls, ratings, feedback fields, or FINISH were touched"
     )
+    return 0
+
+
+async def _answer_job_question(
+    settings: Settings,
+    *,
+    session_path: Path,
+    question: str,
+    model_class: ModelClass,
+) -> int:
+    try:
+        job_description = load_job_description(session_path)
+    except JobDescriptionError as error:
+        print(f"Job-description answer failed: {error}", file=sys.stderr)
+        return 1
+    provider = LMStudioProvider(settings)
+    try:
+        result = await answer_job_description_question(
+            job_description=job_description,
+            candidate_question=question,
+            generator=provider,
+            model_class=model_class,
+            usage_tracker=UsageTracker(session_path / "llm_usage.jsonl"),
+        )
+    except (JobDescriptionError, TimeoutError, ValueError) as error:
+        print(f"Job-description answer failed: {error}", file=sys.stderr)
+        return 1
+    finally:
+        await provider.aclose()
+    print(result.answer.answer)
+    print(f"Grounded in job description: {result.answer.grounded}")
+    if result.answer.evidence:
+        print("Evidence:")
+        for item in result.answer.evidence:
+            print(f"- {item}")
     return 0
 
 
@@ -1601,6 +1642,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--session", required=True, help="session directory under runs/"
     )
     evaluate.add_argument("--model-class", choices=("fast", "deep"), default="deep")
+    answer_job = subcommands.add_parser(
+        "answer-job-question",
+        help="answer a candidate role question using only the saved FloCareer job description",
+    )
+    answer_job.add_argument(
+        "--session", required=True, help="session directory under runs/"
+    )
+    answer_job.add_argument("--question", required=True)
+    answer_job.add_argument("--model-class", choices=("fast", "deep"), default="fast")
     simulate = subcommands.add_parser(
         "simulate-interview",
         help="run a saved session through the controller without browser or audio output",
@@ -1768,6 +1818,20 @@ def main(
             _evaluate_saved_session(
                 settings,
                 session_path=session_path,
+                model_class=cast(ModelClass, args.model_class),
+            )
+        )
+    if args.command == "answer-job-question":
+        try:
+            session_path = _session_path(settings, args.session)
+        except SessionEvaluationError as error:
+            print(f"Job-description answer failed: {error}", file=sys.stderr)
+            return 2
+        return asyncio.run(
+            _answer_job_question(
+                settings,
+                session_path=session_path,
+                question=args.question,
                 model_class=cast(ModelClass, args.model_class),
             )
         )

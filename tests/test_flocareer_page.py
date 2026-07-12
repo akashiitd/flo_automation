@@ -95,6 +95,37 @@ def test_question_extraction_captures_question_six_before_later_cards_collapse_i
     assert questions[0].question_text == "Question six detail loaded on expansion."
 
 
+def test_job_description_extraction_opens_only_the_job_description_tab() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <ul><li id="liJD" aria-label="Job Description">Job Description</li></ul>
+            <div id="divJDContainer" hidden>
+              <h1>Senior GenAI Engineer</h1>
+              <h2>Key Responsibilities</h2>
+              <p>Build and deploy GenAI features using RAG pipelines and APIs.</p>
+            </div>
+            <script>
+              document.querySelector('#liJD').onclick = () => {
+                setTimeout(() => {
+                  document.querySelector('#divJDContainer').hidden = false;
+                }, 50);
+              };
+            </script>
+            """
+        )
+
+        description = FloCareerPage(page).extract_job_description()
+        browser.close()
+
+    assert description == (
+        "Senior GenAI Engineer\nKey Responsibilities\n"
+        "Build and deploy GenAI features using RAG pipelines and APIs."
+    )
+
+
 def test_dashboard_scan_extracts_rows_without_clicking_actions() -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)

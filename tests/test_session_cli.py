@@ -29,6 +29,18 @@ def test_session_commands_are_exposed_as_offline_file_workflows() -> None:
         parser.parse_args(["simulate-interview", "--session", "runs/example"]).command
         == "simulate-interview"
     )
+    assert (
+        parser.parse_args(
+            [
+                "answer-job-question",
+                "--session",
+                "runs/example",
+                "--question",
+                "Which technologies are used?",
+            ]
+        ).command
+        == "answer-job-question"
+    )
 
 
 def test_barge_in_route_test_requires_an_explicit_loopback_confirmation() -> None:

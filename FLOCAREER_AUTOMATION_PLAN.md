@@ -102,7 +102,7 @@ validation remains pending.
 | 3. Apple Speech system audio | Local external-worktree capture and Qwen no-echo isolation validated; portable dependency pending | The dirty external Apple Speech helper worktree selects the exact `CANDIDATE_ONLY` input via an AVFoundation capture session. A 45-second check captured 11 Chrome speech segments as `system` while a distinct Qwen phrase on `INTERVIEWER_TO_CALL` was absent; the external change must be cleaned and committed separately. |
 | 4. Browser dashboard scan | Complete | Persistent manual login, delayed-auth protection, loading protection, card/table extraction, screenshot, no launch action |
 | 5. Launch, join, candidate arrival, and no-show | Implemented; watched validation pending | `--live` handles optional consent and separate Join approval, then records `LAUNCHED → INTERVIEWER_IN_ROOM → WAITING_FOR_CANDIDATE → CANDIDATE_CONNECTED` while keeping the browser open. `no-show` uses the same approvals, waits at least seven minutes, blocks on any detected connection, then needs a fresh candidate-bound no-show approval plus an immediate offline recheck. Hang-up and FINISH remain blocked. |
-| 6. Question extraction | Implemented; watched revalidation pending | `questions-scan` reached 17 sequential cards; supplied `.clFESingleSugDet` HTML and automated coverage preserve multiline text; semantic coding detection and optional reversible Code Editor tab capture have fixture coverage |
+| 6. Question and job-description extraction | Implemented; watched revalidation pending | `questions-scan` reached 17 sequential cards; supplied `.clFESingleSugDet` HTML and automated coverage preserve multiline text; it also saves the read-only Job Description tab. Semantic coding detection and optional reversible Code Editor tab capture have fixture coverage. `answer-job-question` uses only that saved text and requires its cited evidence to be present verbatim. |
 | 7. Code editor automation | Persistent-session integration implemented; watched validation pending | The verified card-scoped switch selector, exact question scoping, tab/state revalidation, and candidate-and-question approval are available only through `join --live --enable-code-editor-question`; language and code remain untouched |
 | 8. Offline session evaluation | Partial: per-question evaluation and preview implemented; final verdict/strengths/risks pending | `evaluate --session` validates saved questions plus candidate-only `source: system` transcript segments with explicit `question_id`, writes local `evaluation.json` and a non-submitted feedback preview, and never guesses turn boundaries. |
 | 9. Supervised interview controller | Supervised local voice loop implemented; watched call validation pending | `supervise-voice-loop` requires disclosure confirmation plus exact operator approval for every candidate-visible Qwen prompt. It wires `CandidateTurnRouter`, selected-device Apple Speech, cancellable playback, per-answer local evaluation, follow-up choice, a persisted transition trace, and a non-submitted final preview without browser side effects. |
@@ -1250,7 +1250,11 @@ Never auto-click the red hangup button.
 
 ### Objective
 
-Extract all question cards and store them in JSON.
+Extract all question cards and store them in JSON. Also capture FloCareer's
+dedicated Job Description tab into an owner-only `job_description.json` session
+artifact. Candidate questions about the role, technology, project, or culture
+must be answered only from this artifact; when the detail is absent, the answer
+must say so and direct the candidate to the recruiter or interviewer.
 
 ### What to capture
 
@@ -1287,6 +1291,7 @@ uv run python main.py questions-scan --candidate "Exact Candidate Name"
 Extracted questions: 17
 Coding question IDs: pending real coding-card HTML fixture
 Questions JSON: runs/questions_scan_<timestamp>/questions.json
+Job description: runs/questions_scan_<timestamp>/job_description.json
 ```
 
 ### Pass criteria

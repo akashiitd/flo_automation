@@ -81,6 +81,9 @@ class FakeQuestionPage:
             ),
         ]
 
+    def extract_job_description(self) -> str:
+        return "Build reliable GenAI services with RAG pipelines and APIs."
+
     def inspect_code_editor_dom(
         self,
         *,
@@ -168,6 +171,13 @@ def test_question_scan_launches_but_never_joins_or_enables_editor(
     saved = json.loads(result.questions_path.read_text(encoding="utf-8"))
     assert saved[0]["question_text"] == "Explain model drift."
     assert saved[1]["has_code_editor"] is True
+    job_description = json.loads(
+        result.job_description_path.read_text(encoding="utf-8")
+    )
+    assert job_description["description"] == (
+        "Build reliable GenAI services with RAG pipelines and APIs."
+    )
+    assert stat.S_IMODE(result.job_description_path.stat().st_mode) == 0o600
     dom_capture = json.loads(result.code_editor_dom_path.read_text(encoding="utf-8"))
     assert dom_capture["schema_version"] == 1
     assert dom_capture["read_only"] is True

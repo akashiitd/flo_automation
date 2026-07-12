@@ -52,6 +52,24 @@ class QuestionEvaluation(BaseModel):
         return self
 
 
+class JobDescriptionAnswer(BaseModel):
+    """A candidate-facing answer constrained to an extracted job description."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str = Field(min_length=1)
+    grounded: bool
+    evidence: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def grounded_answers_require_evidence(self) -> JobDescriptionAnswer:
+        if self.grounded and not self.evidence:
+            raise ValueError("grounded answers must cite job-description evidence")
+        if any(not item.strip() for item in self.evidence):
+            raise ValueError("job-description evidence must not be blank")
+        return self
+
+
 class ProviderMetadata(BaseModel):
     """Normalized runtime and cost data emitted for every generation."""
 

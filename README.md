@@ -36,6 +36,7 @@ The complete roadmap and safety constraints are documented in
 | Approved real Launch, Join, and candidate wait | Implemented; live validation pending | `uv run python main.py join --candidate "Exact Name" --live` |
 | Guarded seven-minute no-show | Implemented; watched validation pending | `uv run python main.py no-show --candidate "Exact Name"` |
 | Approved normal-question extraction | Implemented; 17-card live scan completed, final multiline fix pending revalidation | `uv run python main.py questions-scan --candidate "Exact Name"` |
+| Job-description capture and grounded role answers | Implemented; re-scan once to create a new session artifact | `uv run python main.py answer-job-question --session runs/<session> --question "..."` |
 | Coding-question detection and DOM capture | Implemented against semantic fixtures; watched revalidation pending | `uv run python main.py questions-scan --candidate "Exact Name"` |
 | Guarded code-editor visibility | Integrated with the persistent live Join session; watched validation pending | `uv run python main.py join --candidate "Exact Name" --live --enable-code-editor-question 9` |
 | Feedback fill and final submit | Not implemented | — |
@@ -488,10 +489,16 @@ language, opens or changes an editor, or enables `SHOW CODE EDITOR TO
 CANDIDATE`. It never clicks Join, feedback, ratings, `Mark as`, hang-up, or
 `FINISH`.
 
+It also reads FloCareer's dedicated Job Description tab and saves it separately.
+This is the sole source for candidate questions about the role, technologies,
+or responsibilities; details absent from that tab, such as a particular client
+project or work-culture policy, are reported as unavailable rather than guessed.
+
 Artifacts are saved under `runs/questions_scan_<timestamp>/`:
 
 ```text
 questions.json
+job_description.json
 code_editor_dom.json
 screenshots/questions_expanded.png
 action_log.jsonl
@@ -521,6 +528,21 @@ Structural HTML is allowlist-redacted and capped at 50,000 characters per
 snapshot, with truncation and SHA-256 metadata. Unknown number layouts remain
 `unresolved` rather than being guessed. The file is written with owner-only
 permissions.
+
+### 11. Answer a candidate's role question from the saved job description
+
+After a fresh question scan, use the saved session directory:
+
+```bash
+uv run python main.py answer-job-question \
+  --session runs/questions_scan_<timestamp> \
+  --question "What technologies would I work with?"
+```
+
+The local model returns a concise answer with exact Job Description evidence.
+The command rejects evidence that is not present in the saved text. It does not
+control the browser or speak into a call; it is the grounded answer source for a
+future autonomous voice controller.
 
 This private diagnostic can contain interview content and DOM attributes. Keep
 it under ignored `runs/`; do not publish it or paste it into issues or chat.

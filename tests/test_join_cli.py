@@ -49,6 +49,7 @@ def test_questions_scan_reports_coding_questions_without_join(
             SimpleNamespace(question_id=2, association_status="unique"),
         ),
         questions_path=session / "questions.json",
+        job_description_path=session / "job_description.json",
         code_editor_dom_path=session / "code_editor_dom.json",
         screenshot_path=session / "screenshots" / "questions_expanded.png",
         action_log_path=session / "action_log.jsonl",
@@ -78,6 +79,7 @@ def test_questions_scan_reports_coding_questions_without_join(
     assert "Code editor DOM associations: 2=unique" in output
     assert "Code editor DOM capture: complete" in output
     assert "Code editor DOM: " in output
+    assert "Job description: " in output
     assert "without clicking Join" in output
 
 
