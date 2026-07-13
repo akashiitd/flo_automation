@@ -55,6 +55,10 @@ from llm.usage_tracker import UsageTracker
 from transcriber.apple_speech_adapter import AppleSpeechAdapter
 from orchestrator.graph import InterviewController
 from orchestrator.live_loop import CandidateTurnRouter
+from orchestrator.question_planning import (
+    QuestionPlanningError,
+    build_interview_plan,
+)
 from orchestrator.state import InterviewPhase
 from orchestrator.timer import InterviewTimer
 from tts.qwen_client import QwenTTSClient, QwenTTSError
@@ -1335,6 +1339,43 @@ def _session_path(settings: Settings, raw_path: str) -> Path:
     return resolved
 
 
+def _session_file_path(session_path: Path, raw_path: str) -> Path:
+    path = Path(raw_path).expanduser()
+    resolved = (path if path.is_absolute() else session_path / path).resolve()
+    try:
+        resolved.relative_to(session_path)
+    except ValueError as error:
+        raise QuestionPlanningError(
+            "--edits must be a file inside --session"
+        ) from error
+    return resolved
+
+
+def _plan_interview(
+    *, session_path: Path, minutes: int, edits_path: Path | None
+) -> int:
+    try:
+        result = build_interview_plan(
+            session_path,
+            minutes=minutes,
+            edits_path=edits_path,
+        )
+    except QuestionPlanningError as error:
+        print(f"Interview planning failed: {error}", file=sys.stderr)
+        return 1
+    selected = ", ".join(
+        str(question_id) for question_id in result.selected_question_ids
+    )
+    print("Offline interview plan generated")
+    print(f"Selected questions: {selected or 'none'}")
+    print(f"Plan JSON: {result.plan_path}")
+    print(f"Plan Markdown: {result.markdown_path}")
+    print(
+        "Safety: no browser controls, audio, LLM, or live interview actions were used"
+    )
+    return 0
+
+
 async def _evaluate_saved_session(
     settings: Settings, *, session_path: Path, model_class: ModelClass
 ) -> int:
@@ -1694,6 +1735,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="reversibly open exact coding tabs before the read-only DOM capture",
     )
+    plan_interview = subcommands.add_parser(
+        "plan-interview",
+        help="build an offline, editable interview plan from one question scan",
+    )
+    plan_interview.add_argument(
+        "--session", required=True, help="question-scan directory under runs/"
+    )
+    plan_interview.add_argument(
+        "--minutes", type=int, default=25, help="total interview duration in minutes"
+    )
+    plan_interview.add_argument(
+        "--edits",
+        help=(
+            "optional JSON edit file inside the session "
+            "(select, skip, order, and out_of_scope_skill_ids)"
+        ),
+    )
     evaluate = subcommands.add_parser(
         "evaluate",
         help="evaluate question-bound saved candidate transcripts without browser actions",
@@ -1878,6 +1936,23 @@ def main(
             candidate_name=args.candidate,
             login_timeout_seconds=args.login_timeout,
             inspect_code_editor_tabs=args.inspect_code_editor_tabs,
+        )
+    if args.command == "plan-interview":
+        if args.minutes <= 0:
+            print("--minutes must be positive", file=sys.stderr)
+            return 2
+        try:
+            session_path = _session_path(settings, args.session)
+            edits_path = (
+                _session_file_path(session_path, args.edits) if args.edits else None
+            )
+        except (QuestionPlanningError, SessionEvaluationError) as error:
+            print(f"Interview planning failed: {error}", file=sys.stderr)
+            return 2
+        return _plan_interview(
+            session_path=session_path,
+            minutes=args.minutes,
+            edits_path=edits_path,
         )
     if args.command == "evaluate":
         try:

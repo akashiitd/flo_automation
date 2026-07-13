@@ -38,6 +38,7 @@ The complete roadmap and safety constraints are documented in
 | Approved normal-question extraction | Implemented; 17-card live scan completed, final multiline fix pending revalidation | `uv run python main.py questions-scan --candidate "Exact Name"` |
 | Job-description capture and grounded role answers | Implemented; re-scan once to create a new session artifact | `uv run python main.py answer-job-question --session runs/<session> --question "..."` |
 | Coding-question detection and DOM capture | Implemented against semantic fixtures; watched revalidation pending | `uv run python main.py questions-scan --candidate "Exact Name"` |
+| Offline interview question planning | Implemented; offline only | `uv run python main.py plan-interview --session runs/<session> --minutes 25` |
 | Guarded code-editor visibility | Integrated with the persistent live Join session; watched validation pending | `uv run python main.py join --candidate "Exact Name" --live --enable-code-editor-question 9` |
 | Feedback fill and final submit | Not implemented | — |
 
@@ -569,6 +570,33 @@ Structural HTML is allowlist-redacted and capped at 50,000 characters per
 snapshot, with truncation and SHA-256 metadata. Unknown number layouts remain
 `unresolved` rather than being guessed. The file is written with owner-only
 permissions.
+
+### 10a. Build and review an offline interview plan
+
+Use a saved question scan to produce a local, deterministic plan before any
+live call:
+
+```bash
+uv run python main.py plan-interview \
+  --session runs/questions_scan_<timestamp> \
+  --minutes 25
+```
+
+The command writes owner-only `interview_plan.json` and `interview_plan.md`.
+It classifies every source card, prioritizes mappable mandatory-skill coverage,
+preserves eligible coding questions, reserves time for opening/follow-up/
+candidate questions/closing, and records every skipped-card reason. It never
+opens a browser, invokes an LLM, or starts a live interview.
+
+Before a live call, an operator may make a recorded edit file inside the
+session and pass it with `--edits`. The JSON object supports `select` (question
+IDs), `skip` (question-ID-to-reason map), `order` (selected question IDs), and
+`out_of_scope_skill_ids` (which records matching coding questions as out of
+scope):
+
+```json
+{"select": [8], "skip": {"4": "Operator chose another exercise."}, "order": [8, 3], "out_of_scope_skill_ids": ["python"]}
+```
 
 ### 11. Answer a candidate's role question from the saved job description
 

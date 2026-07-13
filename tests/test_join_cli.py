@@ -95,6 +95,45 @@ def test_questions_scan_reports_coding_questions_without_join(
     assert "without clicking Join" in output
 
 
+def test_plan_interview_writes_an_offline_plan_without_browser_actions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session = tmp_path / "runs" / "questions_scan_test"
+    calls: list[tuple[Path, int, Path | None]] = []
+    result = SimpleNamespace(
+        selected_question_ids=(2, 3),
+        plan_path=session / "interview_plan.json",
+        markdown_path=session / "interview_plan.md",
+    )
+
+    def fake_plan(
+        session_dir: Path, *, minutes: int, edits_path: Path | None = None
+    ) -> object:
+        calls.append((session_dir, minutes, edits_path))
+        return result
+
+    monkeypatch.setattr(cli, "build_interview_plan", fake_plan)
+
+    exit_code = cli.main(
+        [
+            "plan-interview",
+            "--session",
+            "runs/questions_scan_test",
+            "--minutes",
+            "25",
+        ],
+        project_root=tmp_path,
+    )
+
+    assert exit_code == 0
+    assert calls == [(session.resolve(), 25, None)]
+    output = capsys.readouterr().out
+    assert "Selected questions: 2, 3" in output
+    assert "browser controls" in output
+
+
 def test_join_command_runs_only_the_dry_run_controller(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

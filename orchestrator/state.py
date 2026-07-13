@@ -182,6 +182,9 @@ class QuestionPlanItem(BaseModel):
     skip_reason: str | None = None
     mapping_source: QuestionMappingSource
     mapping_confidence: float = Field(ge=0, le=1)
+    mapping_evidence: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=MAX_QUESTIONS
+    )
 
     @model_validator(mode="after")
     def selection_and_skip_reason_agree(self) -> QuestionPlanItem:
