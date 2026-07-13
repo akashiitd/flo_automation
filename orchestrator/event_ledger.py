@@ -27,8 +27,10 @@ class EventLedger:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS event_ledger (
-                event_id TEXT PRIMARY KEY,
-                event_json TEXT NOT NULL
+                session_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                event_json TEXT NOT NULL,
+                PRIMARY KEY (session_id, event_id)
             )
             """
         )
@@ -41,13 +43,19 @@ class EventLedger:
         with self._connect() as connection:
             try:
                 connection.execute(
-                    "INSERT INTO event_ledger (event_id, event_json) VALUES (?, ?)",
-                    (event.event_id, event_json),
+                    """
+                    INSERT INTO event_ledger (session_id, event_id, event_json)
+                    VALUES (?, ?, ?)
+                    """,
+                    (event.session_id, event.event_id, event_json),
                 )
             except sqlite3.IntegrityError:
                 stored = connection.execute(
-                    "SELECT event_json FROM event_ledger WHERE event_id = ?",
-                    (event.event_id,),
+                    """
+                    SELECT event_json FROM event_ledger
+                    WHERE session_id = ? AND event_id = ?
+                    """,
+                    (event.session_id, event.event_id),
                 ).fetchone()
                 assert stored is not None
                 if InterviewEvent.model_validate_json(stored[0]) != event:

@@ -416,6 +416,19 @@ class DynamicInterviewState(BaseModel):
         for evidence in self.skill_evidence:
             require_question_id(evidence.question_id, field_name="skill_evidence")
             require_skill_id(evidence.skill_id, field_name="skill_evidence")
+            mapped_skill_ids = {
+                skill_id
+                for plan_item in self.question_plan
+                if plan_item.question_id == evidence.question_id
+                for skill_id in [
+                    *plan_item.target_skill_ids,
+                    *plan_item.mandatory_skill_coverage,
+                ]
+            }
+            if evidence.skill_id not in mapped_skill_ids:
+                raise ValueError(
+                    "skill_evidence must map its question to its referenced skill"
+                )
 
         evidence_ids = {evidence.evidence_id for evidence in self.skill_evidence}
         if len(evidence_ids) != len(self.skill_evidence):
@@ -453,6 +466,12 @@ class DynamicInterviewState(BaseModel):
             self.pending_effect.session_id != self.session_id
         ):
             raise ValueError("pending_effect must use this state session_id")
+        for effect_request, field_name in (
+            (self.pending_effect, "pending_effect"),
+            (self.last_effect_request, "last_effect_request"),
+        ):
+            if effect_request is not None and effect_request.question_id is not None:
+                require_question_id(effect_request.question_id, field_name=field_name)
         if self.last_effect_request is not None and (
             self.last_effect_request.session_id != self.session_id
         ):

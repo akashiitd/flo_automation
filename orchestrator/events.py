@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
+
+MAX_EVENT_PAYLOAD_BYTES = 16_000
 
 
 class EventSource(StrEnum):
@@ -77,5 +80,21 @@ class InterviewEvent(BaseModel):
             raise ValueError("occurred_at must include a timezone")
         return value
 
+    @field_validator("payload")
+    @classmethod
+    def payload_must_fit_the_checkpoint_window(
+        cls, value: dict[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        if len(json.dumps(value, separators=(",", ":")).encode("utf-8")) > (
+            MAX_EVENT_PAYLOAD_BYTES
+        ):
+            raise ValueError("payload exceeds the event checkpoint size limit")
+        return value
 
-__all__ = ["EventSource", "EventType", "InterviewEvent"]
+
+__all__ = [
+    "EventSource",
+    "EventType",
+    "InterviewEvent",
+    "MAX_EVENT_PAYLOAD_BYTES",
+]

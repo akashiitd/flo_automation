@@ -95,6 +95,7 @@ def test_event_ledger_deduplicates_across_a_reopened_process_boundary(
     assert first_ledger.append(event) is True
     assert second_ledger.append(later_event) is True
     assert first_ledger.append(later_event) is False
+    assert first_ledger.append(event.model_copy(update={"session_id": "session-002"}))
     with pytest.raises(EventLedgerConflictError, match="event_id"):
         EventLedger(ledger_path).append(
             event.model_copy(update={"payload": {"changed": True}})
@@ -263,6 +264,7 @@ def test_dynamic_state_round_trips_with_skill_evidence_and_explicit_reducers() -
         payload_hash=effect_request.payload_hash,
         status=EffectStatus.COMPLETED,
         result_summary="evaluation stored",
+        completed_at=datetime(2026, 7, 13, 10, 1, tzinfo=UTC),
     )
     populated_state = DynamicInterviewState.model_validate(
         {

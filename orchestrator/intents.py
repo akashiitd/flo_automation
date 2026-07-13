@@ -57,9 +57,9 @@ class IntentDecision(BaseModel):
     schema_version: Literal[1] = 1
     intent: CandidateIntent
     confidence: float = Field(ge=0, le=1)
-    evidence_span: str = Field(min_length=1)
-    answer_text_to_keep: str
-    candidate_requested_action: str | None = None
+    evidence_span: str = Field(min_length=1, max_length=4_000)
+    answer_text_to_keep: str = Field(max_length=4_000)
+    candidate_requested_action: str | None = Field(default=None, max_length=1_000)
     safe_route: SafeRoute
 
     @field_validator("evidence_span")
