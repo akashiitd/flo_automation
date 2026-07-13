@@ -10,7 +10,8 @@ from app.questions import InterviewQuestion
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
-from orchestrator.effects import EffectType
+from orchestrator.effects import EffectStatus, EffectType
+from orchestrator.event_adapters import EventNormalizer
 from orchestrator.events import EventSource, EventType, InterviewEvent
 from orchestrator.intents import CandidateIntent
 from orchestrator.graph import InterviewController
@@ -108,6 +109,7 @@ def _transcript_event(
     *,
     event_id: str,
     transcript: str,
+    barge_in: bool = False,
 ) -> InterviewEvent:
     return InterviewEvent.model_validate_json(
         json.dumps(
@@ -121,6 +123,7 @@ def _transcript_event(
                 "payload": {
                     "text": transcript,
                     "segment_id": event_id,
+                    **({"barge_in": True} if barge_in else {}),
                 },
             }
         )
@@ -324,6 +327,190 @@ def test_classified_repeat_is_durable_and_prepares_a_safe_replay_effect() -> Non
     assert result["intent_history"][-1].intent is CandidateIntent.REPEAT_REQUEST
     assert result["pending_effect"].payload["text"] == "Explain API retry handling."
     assert result["pending_effect"].payload["offline_only"] is True
+
+
+def test_matching_tts_completion_resumes_capture_and_duplicate_callback_is_ignored() -> (
+    None
+):
+    async def run() -> tuple[dict[str, object], dict[str, object]]:
+        graph = build_offline_interview_graph(checkpointer=InMemorySaver())
+        state = _state()
+        config = _config(state.thread_id)
+        asked = await graph.ainvoke(
+            {**state.model_dump(mode="python"), "pending_event": _load_events()[0]},
+            config=config,
+        )
+        completion = EventNormalizer(session_id=state.session_id).tts_result(
+            effect_id=asked["pending_effect"].effect_id,
+            outcome="completed",
+            question_id=1,
+            result_summary="played 2 PCM chunks",
+        )
+        completed = await graph.ainvoke({"pending_event": completion}, config=config)
+        duplicate = await graph.ainvoke({"pending_event": completion}, config=config)
+        return completed, duplicate
+
+    completed, duplicate = asyncio.run(run())
+
+    assert completed["capture_enabled"] is True
+    assert completed["pending_effect"] is None
+    assert completed["last_effect_result"].status is EffectStatus.COMPLETED
+    assert duplicate["capture_enabled"] is True
+    assert len(duplicate["recent_events"]) == len(completed["recent_events"])
+
+
+def test_capture_ignores_prompt_bleed_until_tts_completion_or_barge_in() -> None:
+    async def run() -> tuple[dict[str, object], dict[str, object]]:
+        graph = build_offline_interview_graph(checkpointer=InMemorySaver())
+        state = _state().model_copy(update={"mode": "supervised_live"})
+        config = _config(state.thread_id)
+        asked = await graph.ainvoke(
+            {**state.model_dump(mode="python"), "pending_event": _load_events()[0]},
+            config=config,
+        )
+        ignored = await graph.ainvoke(
+            {
+                "pending_event": _transcript_event(
+                    asked,
+                    event_id="prompt-bleed",
+                    transcript="Question words should not become answer evidence.",
+                )
+            },
+            config=config,
+        )
+        completed = await graph.ainvoke(
+            {
+                "pending_event": EventNormalizer(
+                    session_id=state.session_id
+                ).tts_result(
+                    effect_id=asked["pending_effect"].effect_id,
+                    outcome="completed",
+                    question_id=1,
+                )
+            },
+            config=config,
+        )
+        accepted = await graph.ainvoke(
+            {
+                "pending_event": _transcript_event(
+                    completed,
+                    event_id="candidate-answer",
+                    transcript="I would use an idempotency key.",
+                )
+            },
+            config=config,
+        )
+        return ignored, accepted
+
+    ignored, accepted = asyncio.run(run())
+
+    assert ignored["current_turn"].answer_segments == []
+    assert accepted["current_turn"].answer_segments == [
+        "I would use an idempotency key."
+    ]
+
+
+def test_barge_in_cancellation_keeps_candidate_answer_and_uncertain_playback_pauses() -> (
+    None
+):
+    async def run() -> tuple[dict[str, object], dict[str, object]]:
+        graph = build_offline_interview_graph(checkpointer=InMemorySaver())
+        state = _state()
+        config = _config(state.thread_id)
+        asked = await graph.ainvoke(
+            {**state.model_dump(mode="python"), "pending_event": _load_events()[0]},
+            config=config,
+        )
+        await graph.ainvoke(
+            {
+                "pending_event": _transcript_event(
+                    asked,
+                    event_id="barge-answer",
+                    transcript="I would use an idempotency key.",
+                    barge_in=True,
+                )
+            },
+            config=config,
+        )
+        normalizer = EventNormalizer(session_id=state.session_id)
+        cancelled = await graph.ainvoke(
+            {
+                "pending_event": normalizer.tts_result(
+                    effect_id=asked["pending_effect"].effect_id,
+                    outcome="cancelled",
+                    question_id=1,
+                )
+            },
+            config=config,
+        )
+        recovery_graph = build_offline_interview_graph(checkpointer=InMemorySaver())
+        recovery_config = _config("uncertain-playback-thread")
+        recovery_state = _state().model_copy(
+            update={"thread_id": "uncertain-playback-thread"}
+        )
+        recovery_asked = await recovery_graph.ainvoke(
+            {
+                **recovery_state.model_dump(mode="python"),
+                "pending_event": _load_events()[0],
+            },
+            config=recovery_config,
+        )
+        uncertain = await recovery_graph.ainvoke(
+            {
+                "pending_event": normalizer.tts_result(
+                    effect_id=recovery_asked["pending_effect"].effect_id,
+                    outcome="failed",
+                    question_id=1,
+                    result_status="UNCERTAIN",
+                )
+            },
+            config=recovery_config,
+        )
+        return cancelled, uncertain
+
+    cancelled, uncertain = asyncio.run(run())
+
+    assert cancelled["current_turn"].answer_segments == [
+        "I would use an idempotency key."
+    ]
+    assert cancelled["capture_enabled"] is True
+    assert uncertain["phase"] is DynamicInterviewPhase.RECOVERY_REVIEW
+    assert uncertain["pending_interrupt"].kind == "uncertain_playback"
+
+
+def test_audio_route_completion_replays_the_same_question_more_slowly() -> None:
+    async def run() -> dict[str, object]:
+        graph = build_offline_interview_graph(checkpointer=InMemorySaver())
+        state = _state()
+        config = _config(state.thread_id)
+        asked = await graph.ainvoke(
+            {**state.model_dump(mode="python"), "pending_event": _load_events()[0]},
+            config=config,
+        )
+        audio_report = await graph.ainvoke(
+            {
+                "pending_event": _transcript_event(
+                    asked,
+                    event_id="audio-report",
+                    transcript="I cannot hear you.",
+                )
+            },
+            config=config,
+        )
+        event = EventNormalizer(session_id=state.session_id).audio_route_result(
+            effect_id=audio_report["pending_effect"].effect_id,
+            outcome="completed",
+            question_id=1,
+            result_summary="configured output device is available",
+        )
+        return await graph.ainvoke({"pending_event": event}, config=config)
+
+    result = asyncio.run(run())
+
+    assert result["pending_effect"].effect_type is EffectType.SPEAK_TEXT
+    assert result["pending_effect"].payload["text"] == "Explain API retry handling."
+    assert result["pending_effect"].payload["playback_rate"] == 0.85
+    assert result["capture_enabled"] is False
 
 
 def test_transcript_ingress_uses_the_injected_local_classifier_not_an_llm_event() -> (

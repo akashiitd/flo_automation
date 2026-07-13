@@ -160,6 +160,8 @@ class EventNormalizer:
         effect_id: str,
         outcome: Literal["started", "completed", "cancelled", "failed"],
         question_id: int | None,
+        result_summary: str | None = None,
+        result_status: str | None = None,
     ) -> InterviewEvent:
         """Normalize a playback lifecycle callback into the closed event type."""
 
@@ -176,7 +178,53 @@ class EventNormalizer:
             source=EventSource.TTS,
             occurred_at=self._now(),
             question_id=question_id,
-            payload={"effect_id": effect_id, "outcome": outcome},
+            payload={
+                "effect_id": effect_id,
+                "outcome": outcome,
+                **(
+                    {"result_summary": result_summary}
+                    if result_summary is not None
+                    else {}
+                ),
+                **(
+                    {"result_status": result_status}
+                    if result_status is not None
+                    else {}
+                ),
+            },
+            identity={
+                "effect_id": effect_id,
+                "outcome": outcome,
+                "result_status": result_status,
+            },
+        )
+
+    def audio_route_result(
+        self,
+        *,
+        effect_id: str,
+        outcome: Literal["completed", "failed"],
+        question_id: int | None,
+        result_summary: str,
+    ) -> InterviewEvent:
+        """Normalize the supervised output-route check that precedes an audio retry."""
+
+        if not effect_id.strip():
+            raise ValueError("effect_id must not be empty")
+        event_type = {
+            "completed": EventType.AUDIO_ROUTE_COMPLETED,
+            "failed": EventType.AUDIO_ROUTE_FAILED,
+        }[outcome]
+        return self._event(
+            event_type=event_type,
+            source=EventSource.TTS,
+            occurred_at=self._now(),
+            question_id=question_id,
+            payload={
+                "effect_id": effect_id,
+                "outcome": outcome,
+                "result_summary": result_summary,
+            },
             identity={"effect_id": effect_id, "outcome": outcome},
         )
 

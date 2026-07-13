@@ -319,6 +319,7 @@ class DynamicInterviewState(BaseModel):
     )
     current_plan_index: int | None = Field(default=None, ge=0)
     current_question_id: int | None = Field(default=None, ge=1)
+    capture_enabled: bool = False
     completed_question_ids: list[int] = Field(
         default_factory=list, max_length=MAX_QUESTIONS
     )
@@ -423,6 +424,10 @@ class DynamicInterviewState(BaseModel):
             require_question_id(
                 self.current_turn.question_id, field_name="current_turn"
             )
+        if self.capture_enabled and (
+            self.current_question_id is None or self.current_turn is None
+        ):
+            raise ValueError("capture_enabled requires an active question turn")
         for evaluation in self.question_evaluations:
             require_question_id(
                 evaluation.question_id, field_name="question_evaluations"

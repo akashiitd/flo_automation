@@ -18,7 +18,7 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from orchestrator.effects import EffectRequest, EffectType
+from orchestrator.effects import EffectRequest, EffectResult, EffectStatus, EffectType
 from orchestrator.events import EventSource, EventType
 from orchestrator.intent_routing import IntentRouter, RoutedIntent, apply_routed_intent
 from orchestrator.intents import CandidateIntent, IntentDecision, SafeRoute
@@ -26,6 +26,7 @@ from orchestrator.state import (
     CoverageStatus,
     DynamicInterviewPhase,
     DynamicInterviewState,
+    InterruptRequest,
     QuestionContentType,
     QuestionPlanItem,
     SkippedQuestion,
@@ -101,12 +102,10 @@ def build_persistence_spike(*, checkpointer: BaseCheckpointSaver[Any]) -> Any:
 
 
 def _record_offline_event(state: DynamicInterviewState) -> DynamicStateUpdate:
-    """Append one fixture event without performing an external action."""
+    """Append one external observation without performing an external action."""
 
-    if state.mode != "offline":
-        raise ValueError("the Phase 5 parent graph accepts offline state only")
     if state.pending_event is None:
-        raise ValueError("offline graph invocations require a pending_event")
+        raise ValueError("graph invocations require a pending_event")
     return {"recent_events": [state.pending_event]}
 
 
@@ -117,6 +116,8 @@ def _event_route(
     "question_planning",
     "classify_intent",
     "reject_classified_intent",
+    "tts_lifecycle",
+    "audio_route_lifecycle",
     "finish",
     "clear_event",
 ]:
@@ -132,6 +133,18 @@ def _event_route(
         return "question_planning"
     if state.pending_event.event_type is EventType.TRANSCRIPT_FINAL:
         return "classify_intent"
+    if state.pending_event.event_type in {
+        EventType.TTS_STARTED,
+        EventType.TTS_COMPLETED,
+        EventType.TTS_CANCELLED,
+        EventType.TTS_FAILED,
+    }:
+        return "tts_lifecycle"
+    if state.pending_event.event_type in {
+        EventType.AUDIO_ROUTE_COMPLETED,
+        EventType.AUDIO_ROUTE_FAILED,
+    }:
+        return "audio_route_lifecycle"
     if state.pending_event.event_type is EventType.TURN_INTENT_CLASSIFIED:
         return "reject_classified_intent"
     if state.pending_event.event_type in {
@@ -196,6 +209,12 @@ def _classify_candidate_transcript(
             return _needs_operator_for_intent_event(
                 state, "invalid candidate transcript event"
             )
+        if (
+            state.mode != "offline"
+            and not state.capture_enabled
+            and event.payload.get("barge_in") is not True
+        ):
+            return {"pending_event": None}
         transcript = event.payload["text"]
         question_key = str(state.current_question_id)
         deterministic = intent_router.route(
@@ -288,10 +307,210 @@ def _complete_current_turn(state: DynamicInterviewState) -> DynamicStateUpdate:
         "completed_question_ids": completed,
         "current_plan_index": None,
         "current_question_id": None,
+        "capture_enabled": False,
         "current_turn": None,
         "pending_effect": None,
         "phase": DynamicInterviewPhase.SELECT_QUESTION,
     }
+
+
+def _apply_tts_lifecycle(state: DynamicInterviewState) -> DynamicStateUpdate:
+    """Reduce only a matching executor callback into the durable graph state."""
+
+    event = state.pending_event
+    assert event is not None
+    effect_id = event.payload.get("effect_id")
+    if event.source is not EventSource.TTS or not isinstance(effect_id, str):
+        return {"pending_event": None}
+    request = state.pending_effect
+    if request is None or request.effect_id != effect_id:
+        if (
+            state.last_effect_request is None
+            or state.last_effect_request.effect_id != effect_id
+        ):
+            return {"pending_event": None}
+        request = state.last_effect_request
+    if request.effect_type is not EffectType.SPEAK_TEXT:
+        return {"pending_event": None}
+
+    status_by_event = {
+        EventType.TTS_STARTED: EffectStatus.STARTED,
+        EventType.TTS_COMPLETED: EffectStatus.COMPLETED,
+        EventType.TTS_CANCELLED: EffectStatus.CANCELLED,
+        EventType.TTS_FAILED: EffectStatus.FAILED,
+    }
+    status = status_by_event[event.event_type]
+    declared_status = event.payload.get("result_status")
+    if declared_status == EffectStatus.UNCERTAIN:
+        status = EffectStatus.UNCERTAIN
+    current_result = (
+        state.last_effect_result
+        if state.last_effect_result is not None
+        and state.last_effect_result.effect_id == request.effect_id
+        else None
+    )
+    terminal_statuses = {
+        EffectStatus.COMPLETED,
+        EffectStatus.CANCELLED,
+        EffectStatus.FAILED,
+        EffectStatus.UNCERTAIN,
+    }
+    if (
+        current_result is not None
+        and current_result.effect_id == request.effect_id
+        and current_result.status in terminal_statuses
+        and current_result.status is not status
+    ):
+        return {"pending_event": None}
+    result_summary = event.payload.get("result_summary")
+    if not isinstance(result_summary, str) or not result_summary.strip():
+        result_summary = f"TTS {event.event_type.value.casefold()}"
+    result = EffectResult(
+        effect_id=request.effect_id,
+        session_id=request.session_id,
+        effect_type=request.effect_type,
+        idempotency_key=request.idempotency_key,
+        payload_hash=request.payload_hash,
+        status=status,
+        result_summary=result_summary,
+        started_at=(
+            event.occurred_at
+            if status is EffectStatus.STARTED
+            else (current_result.started_at if current_result is not None else None)
+        ),
+        completed_at=event.occurred_at if status in terminal_statuses else None,
+    )
+    update: DynamicStateUpdate = {
+        "last_effect_request": request,
+        "last_effect_result": result,
+        "pending_event": None,
+    }
+    if status is EffectStatus.STARTED:
+        return {**update, "capture_enabled": False}
+    if status is EffectStatus.COMPLETED:
+        return {
+            **update,
+            "pending_effect": None,
+            "capture_enabled": True,
+            "phase": DynamicInterviewPhase.RUN_TURN,
+        }
+    if status is EffectStatus.CANCELLED:
+        # Candidate barge-in is allowed to interrupt playback, never to clear
+        # candidate speech already stored in ``current_turn.answer_segments``.
+        return {
+            **update,
+            "pending_effect": None,
+            "capture_enabled": True,
+            "phase": DynamicInterviewPhase.RUN_TURN,
+        }
+    if status is EffectStatus.UNCERTAIN:
+        return {
+            **update,
+            "pending_effect": None,
+            "capture_enabled": False,
+            "phase": DynamicInterviewPhase.RECOVERY_REVIEW,
+            "recovery_reason": result_summary,
+            "pending_interrupt": InterruptRequest(
+                kind="uncertain_playback",
+                reason=result_summary,
+                options=["replay", "takeover", "stop"],
+            ),
+        }
+    return {
+        **update,
+        "pending_effect": None,
+        "capture_enabled": False,
+        "phase": DynamicInterviewPhase.NEEDS_OPERATOR,
+        "pending_interrupt": InterruptRequest(
+            kind="tts_failed",
+            reason=result_summary,
+            options=["retry", "takeover", "stop"],
+        ),
+    }
+
+
+def _apply_audio_route_lifecycle(state: DynamicInterviewState) -> DynamicStateUpdate:
+    """Retry the preserved question only after its audio-route check is recorded."""
+
+    event = state.pending_event
+    assert event is not None
+    request = state.pending_effect
+    effect_id = event.payload.get("effect_id")
+    if (
+        event.source is not EventSource.TTS
+        or request is None
+        or request.effect_type is not EffectType.CHECK_AUDIO_ROUTE
+        or not isinstance(effect_id, str)
+        or effect_id != request.effect_id
+    ):
+        return {"pending_event": None}
+    result_summary = event.payload.get("result_summary")
+    if not isinstance(result_summary, str) or not result_summary.strip():
+        result_summary = f"audio route {event.event_type.value.casefold()}"
+    succeeded = event.event_type is EventType.AUDIO_ROUTE_COMPLETED
+    result = EffectResult(
+        effect_id=request.effect_id,
+        session_id=request.session_id,
+        effect_type=request.effect_type,
+        idempotency_key=request.idempotency_key,
+        payload_hash=request.payload_hash,
+        status=EffectStatus.COMPLETED if succeeded else EffectStatus.FAILED,
+        result_summary=result_summary,
+        completed_at=event.occurred_at if succeeded else None,
+    )
+    update: DynamicStateUpdate = {
+        "last_effect_request": request,
+        "last_effect_result": result,
+        "pending_event": None,
+        "pending_effect": None,
+        "capture_enabled": False,
+    }
+    if not succeeded:
+        return {
+            **update,
+            "phase": DynamicInterviewPhase.NEEDS_OPERATOR,
+            "pending_interrupt": InterruptRequest(
+                kind="audio_route_failed",
+                reason=result_summary,
+                options=["retry_audio", "takeover", "stop"],
+            ),
+        }
+    question_id = request.question_id
+    assert question_id is not None
+    replay = EffectRequest(
+        effect_id=(
+            f"offline-audio-replay-{state.session_id}-{question_id}-"
+            f"{state.audio_problem_count}"
+        ),
+        effect_type=EffectType.SPEAK_TEXT,
+        idempotency_key=(
+            f"{state.session_id}:audio-replay:{question_id}:{state.audio_problem_count}"
+        ),
+        session_id=state.session_id,
+        question_id=question_id,
+        payload={
+            "offline_only": True,
+            "kind": "audio-recovery-replay",
+            "text": _current_question_text(state),
+            "playback_rate": 0.85,
+        },
+    )
+    return {
+        **update,
+        "pending_effect": replay,
+        "phase": DynamicInterviewPhase.RUN_TURN,
+    }
+
+
+def _current_question_text(state: DynamicInterviewState) -> str:
+    """Return the visible prompt for a replay without exposing rubric content."""
+
+    assert state.current_question_id is not None
+    return next(
+        question.question_text
+        for question in state.questions
+        if question.id == state.current_question_id
+    )
 
 
 def _coverage_is_sufficient(state: DynamicInterviewState, skill_id: str) -> bool:
@@ -436,6 +655,7 @@ def _select_next_question(state: DynamicInterviewState) -> DynamicStateUpdate:
         "skipped_questions": skipped,
         "current_plan_index": plan_index,
         "current_question_id": question.id,
+        "capture_enabled": False,
         "current_turn": TurnState(question_id=question.id),
         "pending_effect": effect,
         "last_effect_request": effect,
@@ -469,6 +689,7 @@ def _finish_offline_interview(state: DynamicInterviewState) -> DynamicStateUpdat
         "skipped_questions": skipped,
         "current_plan_index": None,
         "current_question_id": None,
+        "capture_enabled": False,
         "current_turn": None,
         "pending_effect": None,
         "pending_event": None,
@@ -512,6 +733,8 @@ def build_offline_interview_graph(
     builder.add_node("complete_turn", _complete_current_turn)
     builder.add_node("classify_intent", _classify_candidate_transcript(router))
     builder.add_node("reject_classified_intent", _rejected_intent_event)
+    builder.add_node("tts_lifecycle", _apply_tts_lifecycle)
+    builder.add_node("audio_route_lifecycle", _apply_audio_route_lifecycle)
     builder.add_node("question_planning", planning_subgraph)
     builder.add_node("finish", _finish_offline_interview)
     builder.add_node("clear_event", _clear_pending_event)
@@ -528,6 +751,8 @@ def build_offline_interview_graph(
             "question_planning": "question_planning",
             "classify_intent": "classify_intent",
             "reject_classified_intent": "reject_classified_intent",
+            "tts_lifecycle": "tts_lifecycle",
+            "audio_route_lifecycle": "audio_route_lifecycle",
             "finish": "finish",
             "clear_event": "clear_event",
         },
@@ -539,6 +764,8 @@ def build_offline_interview_graph(
         {"question_planning": "question_planning", "done": END},
     )
     builder.add_edge("reject_classified_intent", END)
+    builder.add_edge("tts_lifecycle", END)
+    builder.add_edge("audio_route_lifecycle", END)
     builder.add_edge("question_planning", END)
     builder.add_edge("finish", END)
     builder.add_edge("clear_event", END)
