@@ -27,15 +27,22 @@ class PersistenceSpikeState(BaseModel):
     history: Annotated[list[str], operator.add] = Field(default_factory=list)
 
 
-def _record_started(state: PersistenceSpikeState) -> dict[str, list[str]]:
-    """Emit the monitor update immediately before the approval boundary."""
+async def _record_started(state: PersistenceSpikeState) -> dict[str, list[str]]:
+    """Persist the beginning of the scoped start-approval flow."""
 
     del state
-    get_stream_writer()({"phase": "awaiting_start_approval"})
     return {"history": ["started"]}
 
 
-def _await_start_approval(
+async def _emit_start_monitor(state: PersistenceSpikeState) -> dict[str, object]:
+    """Publish the monitor event immediately before the approval boundary."""
+
+    del state
+    get_stream_writer()({"phase": "awaiting_start_approval"})
+    return {}
+
+
+async def _await_start_approval(
     state: PersistenceSpikeState,
 ) -> dict[str, str | list[str]]:
     """Pause durably until the scoped start decision is supplied on resume."""
@@ -56,9 +63,11 @@ def build_persistence_spike(*, checkpointer: BaseCheckpointSaver[Any]) -> Any:
 
     builder = StateGraph(PersistenceSpikeState)
     builder.add_node("record_started", _record_started)
+    builder.add_node("emit_start_monitor", _emit_start_monitor)
     builder.add_node("await_start_approval", _await_start_approval)
     builder.add_edge(START, "record_started")
-    builder.add_edge("record_started", "await_start_approval")
+    builder.add_edge("record_started", "emit_start_monitor")
+    builder.add_edge("emit_start_monitor", "await_start_approval")
     builder.add_edge("await_start_approval", END)
     return builder.compile(checkpointer=checkpointer)
 

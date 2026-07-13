@@ -623,6 +623,14 @@ has passed against a future scheduled interview.
 
 ## Validation and development
 
+### LangGraph controller foundation
+
+The dynamic controller is in an offline persistence-foundation phase only. It
+remains a disclosed, supervised copilot: it does not yet start or join a call,
+speak to a candidate, control FloCareer, or make hiring decisions. Every future
+candidate-visible action and recovery decision remains subject to the safety
+and human-approval boundaries described above.
+
 ```bash
 uv run pytest
 uv run ruff check .
