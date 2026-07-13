@@ -17,6 +17,8 @@ from browser.join_workflow import (
     PostLaunchState,
     prepare_launch_control,
 )
+from browser.skill_workflow import ExtractedSkillParameter
+from orchestrator.state import SkillParametersArtifact
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +85,11 @@ class QuestionScanResult:
     job_description_path: Path
     code_editor_dom_observations: tuple[CodeEditorDomObservation, ...]
     code_editor_dom_path: Path
+    skill_parameters: tuple[ExtractedSkillParameter, ...]
+    skill_parameters_path: Path
+    skill_parameters_before_screenshot_path: Path
+    skill_parameters_after_screenshot_path: Path
+    skill_section_dom_path: Path
     screenshot_path: Path
     action_log_path: Path
 
@@ -94,6 +101,8 @@ class QuestionScanPage(LaunchWorkflowPage, Protocol):
     def wait_for_question_panel(self) -> None: ...
     def extract_questions(self) -> list[ExtractedQuestion]: ...
     def extract_job_description(self) -> str: ...
+    def extract_skill_parameters(self) -> list[ExtractedSkillParameter]: ...
+    def capture_skill_section_dom(self) -> StructuralDomSnapshot: ...
     def inspect_code_editor_dom(
         self,
         *,
@@ -151,6 +160,40 @@ def _write_code_editor_dom(
         ),
         "observations": [asdict(observation) for observation in observations],
     }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.touch(mode=0o600, exist_ok=True)
+    temporary.chmod(0o600)
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    path.chmod(0o600)
+
+
+def _write_skill_section_dom(path: Path, snapshot: StructuralDomSnapshot) -> None:
+    payload = {
+        "schema_version": 1,
+        "read_only": True,
+        "contains_private_interview_structure": True,
+        "snapshot": asdict(snapshot),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.touch(mode=0o600, exist_ok=True)
+    temporary.chmod(0o600)
+    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    path.chmod(0o600)
+
+
+def _write_skill_parameters(
+    path: Path, parameters: tuple[ExtractedSkillParameter, ...]
+) -> None:
+    payload = {
+        "schema_version": 1,
+        "read_only": True,
+        "parameters": [asdict(parameter) for parameter in parameters],
+    }
+    SkillParametersArtifact.model_validate(payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
     temporary.touch(mode=0o600, exist_ok=True)
@@ -246,6 +289,35 @@ def run_question_scan(
     if not job_description:
         raise JoinWorkflowError("Job description extraction returned empty text")
 
+    skill_parameters_before_screenshot = page.capture_screenshot(
+        screenshots_dir, "skill_parameters_before"
+    )
+    try:
+        skill_parameters = tuple(page.extract_skill_parameters())
+    except Exception as error:
+        diagnostic = page.capture_screenshot(
+            screenshots_dir, "skill_parameters_extract_error"
+        )
+        detail = str(error) or type(error).__name__
+        raise JoinWorkflowError(f"{detail}. Screenshot: {diagnostic}") from error
+    skill_parameters_after_screenshot = page.capture_screenshot(
+        screenshots_dir, "skill_parameters_after"
+    )
+    if not skill_parameters:
+        raise JoinWorkflowError("Skill parameter extraction returned no rows")
+    skill_ids = [parameter.id for parameter in skill_parameters]
+    skill_names = [parameter.name.casefold() for parameter in skill_parameters]
+    if (
+        len(skill_ids) != len(set(skill_ids))
+        or len(skill_names) != len(set(skill_names))
+        or any(
+            not parameter.name or not parameter.requirement or not parameter.level
+            for parameter in skill_parameters
+        )
+        or any(parameter.rating_scale != 5 for parameter in skill_parameters)
+    ):
+        raise JoinWorkflowError("Skill parameter extraction failed strict validation")
+
     try:
         coding_question_ids = tuple(
             question.id for question in questions if question.has_code_editor
@@ -290,6 +362,10 @@ def run_question_scan(
         coding_question_ids=coding_question_ids,
         observations=code_editor_dom_observations,
     )
+    skill_parameters_path = session_dir / "skill_parameters.json"
+    _write_skill_parameters(skill_parameters_path, skill_parameters)
+    skill_section_dom_path = session_dir / "skill_section_dom.json"
+    _write_skill_section_dom(skill_section_dom_path, page.capture_skill_section_dom())
     return QuestionScanResult(
         candidate_identifier=identifier,
         questions=questions,
@@ -297,6 +373,11 @@ def run_question_scan(
         job_description_path=job_description_path,
         code_editor_dom_observations=code_editor_dom_observations,
         code_editor_dom_path=code_editor_dom_path,
+        skill_parameters=skill_parameters,
+        skill_parameters_path=skill_parameters_path,
+        skill_parameters_before_screenshot_path=skill_parameters_before_screenshot,
+        skill_parameters_after_screenshot_path=skill_parameters_after_screenshot,
+        skill_section_dom_path=skill_section_dom_path,
         screenshot_path=screenshot,
         action_log_path=action_router.log_path,
     )

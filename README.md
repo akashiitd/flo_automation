@@ -531,7 +531,11 @@ Artifacts are saved under `runs/questions_scan_<timestamp>/`:
 questions.json
 job_description.json
 code_editor_dom.json
+skill_parameters.json
+skill_section_dom.json
 screenshots/questions_expanded.png
+screenshots/skill_parameters_before.png
+screenshots/skill_parameters_after.png
 action_log.jsonl
 ```
 
@@ -542,6 +546,12 @@ their rendered state, the nearest control wrapper, and the encompassing card
 structure. Each observation is classified as `unique`, `none`, or `ambiguous`.
 Hidden-but-mounted controls are captured without opening the tab. Neither the
 tab nor any candidate control is clicked during discovery.
+
+`skill_parameters.json` records each visible skill's stable DOM ID, name,
+requirement, level, and five-star scale. `skill_section_dom.json` is a
+redacted structural capture of only the skill heading and rows; it excludes
+performance feedback. The skill before/after screenshots and all private scan
+artifacts are written owner-only (`0600`).
 
 To capture the post-tab visibility state without changing candidate visibility,
 opt in to reversible scoped navigation:

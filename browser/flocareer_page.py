@@ -33,6 +33,7 @@ from browser.question_workflow import (
 )
 from browser.room_workflow import InterviewRoomState
 from browser.screenshots import save_screenshot
+from browser.skill_workflow import ExtractedSkillParameter
 from browser.selectors import (
     ACTIVE_MENU_SELECTORS,
     CANDIDATE_MENU_BUTTON_SELECTORS,
@@ -1030,6 +1031,218 @@ class FloCareerPage:
         if not text:
             raise JoinWorkflowError("Job Description panel contains no readable text")
         return text
+
+    def capture_skill_section_dom(self) -> StructuralDomSnapshot:
+        """Capture the skill-rating panel, excluding performance feedback controls."""
+
+        raw_html = self.page.evaluate(
+            r"""
+            () => {
+              const visible = (element) => {
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden'
+                  && rect.width > 0 && rect.height > 0;
+              };
+              const rendered = (element) => {
+                const style = getComputedStyle(element);
+                return !element.hidden && style.display !== 'none'
+                  && style.visibility !== 'hidden';
+              };
+              const panels = [...document.querySelectorAll('.clMainSkillRate')]
+                .filter(visible);
+              if (panels.length !== 1) {
+                throw new Error(`Expected one visible FloCareer skill panel; found ${panels.length}`);
+              }
+              const headingText = "RATE CANDIDATE'S SKILLS";
+              const text = (element) => (element.textContent || '')
+                .replace(/\s+/g, ' ').trim();
+              const headings = [...panels[0].querySelectorAll('.clRateCanSkillBold')]
+                .filter(element => visible(element) && text(element) === headingText)
+                .filter(element => ![...element.children]
+                  .some(child => text(child) === headingText));
+              const rows = [...panels[0].querySelectorAll('.clSingleSkill')]
+                .filter(rendered);
+              if (headings.length !== 1 || !rows.length) {
+                throw new Error(
+                  `Expected one visible skill heading and at least one row; found ${headings.length} and ${rows.length}`
+                );
+              }
+              const clone = document.createElement('div');
+              clone.className = 'clMainSkillRate';
+              clone.append(headings[0].cloneNode(true));
+              rows.forEach(row => clone.append(row.cloneNode(true)));
+              clone.querySelectorAll('script, style, svg').forEach(node => node.remove());
+              [clone, ...clone.querySelectorAll('*')].forEach(node => {
+                [...node.attributes].forEach(attribute => {
+                  const allowed = ['class', 'role', 'type', 'aria-label', 'aria-checked',
+                    'aria-disabled', 'data-testid', 'name', 'disabled', 'checked']
+                    .includes(attribute.name);
+                  if (!allowed) node.removeAttribute(attribute.name);
+                });
+                if (node.matches('input, textarea, select')) {
+                  node.removeAttribute('value');
+                  node.removeAttribute('placeholder');
+                }
+              });
+              return clone.outerHTML;
+            }
+            """
+        )
+        html = str(raw_html)
+        maximum_length = 50_000
+        return StructuralDomSnapshot(
+            html=html[:maximum_length],
+            truncated=len(html) > maximum_length,
+            sha256=hashlib.sha256(html.encode("utf-8")).hexdigest(),
+        )
+
+    def extract_skill_parameters(self) -> list[ExtractedSkillParameter]:
+        """Read, validate, and re-check FloCareer skill rows without editing them."""
+
+        try:
+            self.page.wait_for_function(
+                r"""
+                () => {
+                  const visible = (element) => {
+                    const style = getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    return style.display !== 'none' && style.visibility !== 'hidden'
+                      && rect.width > 0 && rect.height > 0;
+                  };
+                  const rendered = (element) => {
+                    const style = getComputedStyle(element);
+                    return !element.hidden && style.display !== 'none'
+                      && style.visibility !== 'hidden';
+                  };
+                  const panels = [...document.querySelectorAll('.clMainSkillRate')]
+                    .filter(visible);
+                  return panels.length === 1
+                    && [...panels[0].querySelectorAll('.clSingleSkill')]
+                      .some(rendered);
+                }
+                """,
+                timeout=10_000,
+            )
+        except PlaywrightTimeoutError as error:
+            raise JoinWorkflowError(
+                "Timed out waiting for FloCareer skill rows to render"
+            ) from error
+        raw_parameters = self.page.evaluate(
+            r"""
+            () => {
+              const visible = (element) => {
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden'
+                  && rect.width > 0 && rect.height > 0;
+              };
+              const rendered = (element) => {
+                const style = getComputedStyle(element);
+                return !element.hidden && style.display !== 'none'
+                  && style.visibility !== 'hidden';
+              };
+              const panels = [...document.querySelectorAll('.clMainSkillRate')]
+                .filter(visible);
+              if (panels.length !== 1) {
+                throw new Error(`Expected one visible FloCareer skill panel; found ${panels.length}`);
+              }
+              const rows = [...panels[0].querySelectorAll('.clSingleSkill')]
+                .filter(rendered);
+              if (!rows.length) {
+                throw new Error('FloCareer skill panel has no visible skill rows');
+              }
+              const selectedValues = () => rows.map(row => {
+                const checked = row.querySelector('input[type="radio"]:checked');
+                return checked ? checked.value : null;
+              });
+              const before = selectedValues();
+              const parameters = rows.map(row => {
+                const id = row.id;
+                if (!/^container-normal-\d+$/.test(id)) {
+                  throw new Error(`Skill row has an unexpected id: ${id || '(blank)'}`);
+                }
+                const nameCells = [...row.querySelectorAll('.wordBreak')];
+                if (nameCells.length !== 1) {
+                  throw new Error(`Skill row ${id} has an ambiguous name cell`);
+                }
+                const details = nameCells[0].parentElement;
+                const detailCells = details ? [...details.children] : [];
+                const metadataCells = detailCells.filter(cell => cell !== nameCells[0]
+                  && /^([^/]+)\/([^/]+)$/.test((cell.innerText || '').replace(/\s+/g, ' ').trim()));
+                if (metadataCells.length !== 1) {
+                  throw new Error(`Skill row ${id} has an ambiguous requirement/level cell`);
+                }
+                const name = (nameCells[0].innerText || '').replace(/\s+/g, ' ').trim();
+                const metadata = /^([^/]+)\/([^/]+)$/.exec(
+                  (metadataCells[0].innerText || '').replace(/\s+/g, ' ').trim()
+                );
+                if (!name || !metadata) {
+                  throw new Error(`Skill row ${id} has invalid name or requirement/level metadata`);
+                }
+                const inputs = [...row.querySelectorAll(
+                  'input.MuiRating-visuallyHidden[type="radio"][name^="starRating-"]'
+                )].filter(input => input.value !== '');
+                const names = new Set(inputs.map(input => input.name));
+                const ratingScale = inputs.map(input => Number(input.value));
+                if (names.size !== 1 || ratingScale.join(',') !== '1,2,3,4,5') {
+                  throw new Error(`Skill row ${id} does not expose an exact five-star scale`);
+                }
+                return {
+                  id,
+                  name,
+                  requirement: metadata[1].trim(),
+                  level: metadata[2].trim(),
+                  rating_scale: ratingScale.length,
+                  source: 'flocareer_dom',
+                };
+              });
+              const after = selectedValues();
+              if (JSON.stringify(before) !== JSON.stringify(after)) {
+                throw new Error('Skill rating selection changed during read-only extraction');
+              }
+              return parameters;
+            }
+            """
+        )
+        if not isinstance(raw_parameters, list):
+            raise JoinWorkflowError(
+                "FloCareer skill parameter extraction was malformed"
+            )
+        parameters: list[ExtractedSkillParameter] = []
+        for raw in raw_parameters:
+            if not isinstance(raw, dict):
+                raise JoinWorkflowError("FloCareer returned an invalid skill parameter")
+            rating_scale = raw.get("rating_scale")
+            if not isinstance(rating_scale, int):
+                raise JoinWorkflowError(
+                    "FloCareer skill parameter has an invalid scale"
+                )
+            parameter = ExtractedSkillParameter(
+                id=str(raw.get("id") or ""),
+                name=str(raw.get("name") or ""),
+                requirement=str(raw.get("requirement") or ""),
+                level=str(raw.get("level") or ""),
+                rating_scale=rating_scale,
+                source=str(raw.get("source") or ""),
+            )
+            if (
+                not all(
+                    (
+                        parameter.id,
+                        parameter.name,
+                        parameter.requirement,
+                        parameter.level,
+                    )
+                )
+                or parameter.rating_scale != 5
+                or parameter.source != "flocareer_dom"
+            ):
+                raise JoinWorkflowError("FloCareer skill parameter failed validation")
+            parameters.append(parameter)
+        if len({parameter.id for parameter in parameters}) != len(parameters):
+            raise JoinWorkflowError("FloCareer skill parameter IDs are not unique")
+        return parameters
 
     @staticmethod
     def _parse_question_snapshot(snapshot: dict[str, object]) -> ExtractedQuestion:

@@ -15,4 +15,5 @@ def save_screenshot(page: Page, screenshots_dir: Path, name: str) -> Path:
     screenshots_dir.mkdir(parents=True, exist_ok=True)
     path = screenshots_dir / f"{safe_name}.png"
     page.screenshot(path=str(path), full_page=True)
+    path.chmod(0o600)
     return path

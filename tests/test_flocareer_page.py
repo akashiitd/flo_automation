@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import pytest
 from playwright.sync_api import sync_playwright
@@ -10,6 +11,9 @@ from browser.flocareer_page import FloCareerPage
 from browser.join_workflow import JoinWorkflowError, PostLaunchState
 from browser.question_workflow import ExtractedQuestion
 from browser.room_workflow import InterviewRoomState
+
+
+_FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def test_audio_setup_selects_virtual_microphone_and_jabra_speaker() -> None:
@@ -241,6 +245,47 @@ def test_job_description_extraction_matches_captured_flocareer_tab_markup() -> N
     assert description == (
         "Senior GenAI Engineer\nBuild RAG pipelines, embeddings, and vector databases."
     )
+
+
+def test_skill_parameter_extraction_uses_captured_structure_without_mutation() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            (_FIXTURES / "skill_parameters_page.html").read_text(encoding="utf-8")
+        )
+        before_ratings = page.locator(".clSingleSkill input").evaluate_all(
+            "inputs => inputs.map(input => ({value: input.value, checked: input.checked}))"
+        )
+        before_feedback = page.locator("textarea").evaluate_all(
+            "inputs => inputs.map(input => input.value)"
+        )
+
+        extracted = FloCareerPage(page).extract_skill_parameters()
+        snapshot = FloCareerPage(page).capture_skill_section_dom()
+
+        after_ratings = page.locator(".clSingleSkill input").evaluate_all(
+            "inputs => inputs.map(input => ({value: input.value, checked: input.checked}))"
+        )
+        after_feedback = page.locator("textarea").evaluate_all(
+            "inputs => inputs.map(input => input.value)"
+        )
+        assert after_ratings == before_ratings
+        assert after_feedback == before_feedback
+        browser.close()
+
+    assert [(parameter.id, parameter.name) for parameter in extracted] == [
+        ("container-normal-402780", "Coding"),
+        ("container-normal-402781", "RAG"),
+    ]
+    assert extracted[0].requirement == "Mandatory"
+    assert extracted[0].level == "Professional"
+    assert extracted[1].rating_scale == 5
+    assert extracted[0].source == "flocareer_dom"
+    assert "clMainSkillRate" in snapshot.html
+    assert "clSingleSkill" in snapshot.html
+    assert "container-normal-template" not in snapshot.html
+    assert "Do not capture this feedback." not in snapshot.html
 
 
 def test_dashboard_scan_extracts_rows_without_clicking_actions() -> None:

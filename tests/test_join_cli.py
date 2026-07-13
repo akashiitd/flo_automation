@@ -51,6 +51,14 @@ def test_questions_scan_reports_coding_questions_without_join(
         questions_path=session / "questions.json",
         job_description_path=session / "job_description.json",
         code_editor_dom_path=session / "code_editor_dom.json",
+        skill_parameters_path=session / "skill_parameters.json",
+        skill_parameters_before_screenshot_path=session
+        / "screenshots"
+        / "skill_parameters_before.png",
+        skill_parameters_after_screenshot_path=session
+        / "screenshots"
+        / "skill_parameters_after.png",
+        skill_section_dom_path=session / "skill_section_dom.json",
         screenshot_path=session / "screenshots" / "questions_expanded.png",
         action_log_path=session / "action_log.jsonl",
     )
@@ -80,6 +88,10 @@ def test_questions_scan_reports_coding_questions_without_join(
     assert "Code editor DOM capture: complete" in output
     assert "Code editor DOM: " in output
     assert "Job description: " in output
+    assert "Skill parameters: " in output
+    assert "Skill ratings before: " in output
+    assert "Skill ratings after: " in output
+    assert "Skill section DOM: " in output
     assert "without clicking Join" in output
 
 

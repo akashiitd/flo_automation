@@ -14,6 +14,7 @@ from browser.question_workflow import (
     StructuralDomSnapshot,
     run_question_scan,
 )
+from browser.skill_workflow import ExtractedSkillParameter
 
 
 class FakeQuestionPage:
@@ -83,6 +84,24 @@ class FakeQuestionPage:
 
     def extract_job_description(self) -> str:
         return "Build reliable GenAI services with RAG pipelines and APIs."
+
+    def capture_skill_section_dom(self) -> StructuralDomSnapshot:
+        return StructuralDomSnapshot(
+            html="<section><h2>RATE CANDIDATE'S SKILLS</h2></section>",
+            truncated=False,
+            sha256="skills-hash",
+        )
+
+    def extract_skill_parameters(self) -> list[ExtractedSkillParameter]:
+        return [
+            ExtractedSkillParameter(
+                id="container-normal-402780",
+                name="Coding",
+                requirement="Mandatory",
+                level="Professional",
+                rating_scale=5,
+            )
+        ]
 
     def inspect_code_editor_dom(
         self,
@@ -185,6 +204,24 @@ def test_question_scan_launches_but_never_joins_or_enables_editor(
     assert dom_capture["observations"][0]["question_id"] == 2
     assert dom_capture["observations"][0]["association_status"] == "unique"
     assert stat.S_IMODE(result.code_editor_dom_path.stat().st_mode) == 0o600
+    skill_parameters = json.loads(
+        result.skill_parameters_path.read_text(encoding="utf-8")
+    )
+    assert skill_parameters["schema_version"] == 1
+    assert skill_parameters["read_only"] is True
+    assert skill_parameters["parameters"][0]["name"] == "Coding"
+    assert skill_parameters["parameters"][0]["rating_scale"] == 5
+    assert skill_parameters["parameters"][0]["source"] == "flocareer_dom"
+    assert stat.S_IMODE(result.skill_parameters_path.stat().st_mode) == 0o600
+    assert result.skill_parameters_before_screenshot_path.exists()
+    assert result.skill_parameters_after_screenshot_path.exists()
+    skill_capture = json.loads(
+        result.skill_section_dom_path.read_text(encoding="utf-8")
+    )
+    assert skill_capture["schema_version"] == 1
+    assert skill_capture["read_only"] is True
+    assert "RATE CANDIDATE" in skill_capture["snapshot"]["html"]
+    assert stat.S_IMODE(result.skill_section_dom_path.stat().st_mode) == 0o600
     assert "CLICK_JOIN" not in router.log_path.read_text(encoding="utf-8")
 
 
