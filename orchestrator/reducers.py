@@ -8,6 +8,7 @@ from typing import Any
 from orchestrator.events import InterviewEvent
 
 RECENT_EVENT_LIMIT = 50
+SKILL_EVIDENCE_LIMIT = 200
 
 
 class DynamicStateConflictError(ValueError):
@@ -64,12 +65,14 @@ def append_skill_evidence(
         existing,
         incoming,
         identifier_attribute="evidence_id",
+        limit=SKILL_EVIDENCE_LIMIT,
     )
 
 
 __all__ = [
     "DynamicStateConflictError",
     "RECENT_EVENT_LIMIT",
+    "SKILL_EVIDENCE_LIMIT",
     "append_interview_events",
     "append_skill_evidence",
 ]

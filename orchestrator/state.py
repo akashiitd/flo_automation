@@ -14,7 +14,18 @@ from llm.schemas import QuestionEvaluation
 from orchestrator.effects import EffectRequest, EffectResult
 from orchestrator.events import InterviewEvent
 from orchestrator.intents import IntentDecision
-from orchestrator.reducers import append_interview_events, append_skill_evidence
+from orchestrator.reducers import (
+    RECENT_EVENT_LIMIT,
+    SKILL_EVIDENCE_LIMIT,
+    append_interview_events,
+    append_skill_evidence,
+)
+
+MAX_QUESTIONS = 100
+MAX_INTENT_HISTORY = 100
+MAX_TURN_SEGMENTS = 100
+MAX_SEGMENT_CHARACTERS = 4_000
+MAX_TIMER_EVENTS = 10
 
 
 class InterviewPhase(StrEnum):
@@ -119,8 +130,8 @@ class QuestionState(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     id: int = Field(ge=1)
-    question_text: str = Field(min_length=1)
-    ideal_answer: str = ""
+    question_text: str = Field(min_length=1, max_length=10_000)
+    ideal_answer: str = Field(default="", max_length=10_000)
     has_code_editor: bool = False
 
 
@@ -130,9 +141,9 @@ class SkillParameter(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    requirement: str = Field(min_length=1)
-    level: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=500)
+    requirement: str = Field(min_length=1, max_length=100)
+    level: str = Field(min_length=1, max_length=100)
     rating_scale: int = Field(ge=1, le=5)
     source: str = "flocareer_dom"
 
@@ -144,7 +155,9 @@ class SkillParametersArtifact(BaseModel):
 
     schema_version: Literal[1] = 1
     read_only: Literal[True] = True
-    parameters: list[SkillParameter] = Field(default_factory=list)
+    parameters: list[SkillParameter] = Field(
+        default_factory=list, max_length=MAX_QUESTIONS
+    )
 
     @model_validator(mode="after")
     def parameters_must_have_unique_ids(self) -> SkillParametersArtifact:
@@ -185,7 +198,9 @@ class QuestionPlanArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     schema_version: Literal[1] = 1
-    items: list[QuestionPlanItem] = Field(default_factory=list)
+    items: list[QuestionPlanItem] = Field(
+        default_factory=list, max_length=MAX_QUESTIONS
+    )
 
     @model_validator(mode="after")
     def items_must_have_unique_question_ids(self) -> QuestionPlanArtifact:
@@ -210,8 +225,12 @@ class TurnState(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     question_id: int = Field(ge=1)
-    answer_segments: list[str] = Field(default_factory=list)
-    control_utterances: list[str] = Field(default_factory=list)
+    answer_segments: list[Annotated[str, Field(max_length=MAX_SEGMENT_CHARACTERS)]] = (
+        Field(default_factory=list, max_length=MAX_TURN_SEGMENTS)
+    )
+    control_utterances: list[
+        Annotated[str, Field(max_length=MAX_SEGMENT_CHARACTERS)]
+    ] = Field(default_factory=list, max_length=MAX_TURN_SEGMENTS)
     answer_started_at: datetime | None = None
     silence_started_at: datetime | None = None
 
@@ -224,7 +243,7 @@ class SkillEvidence(BaseModel):
     evidence_id: str = Field(min_length=1)
     skill_id: str = Field(min_length=1)
     question_id: int = Field(ge=1)
-    transcript_evidence: str = Field(min_length=1)
+    transcript_evidence: str = Field(min_length=1, max_length=MAX_SEGMENT_CHARACTERS)
     question_score: int = Field(ge=1, le=5)
     relevance_weight: float = Field(ge=0, le=1)
     confidence: float = Field(ge=0, le=1)
@@ -239,7 +258,7 @@ class SkillAssessment(BaseModel):
     proposed_score: int | None = Field(default=None, ge=1, le=5)
     status: SkillAssessmentStatus
     evidence_ids: list[str] = Field(default_factory=list)
-    rationale: str = Field(min_length=1)
+    rationale: str = Field(min_length=1, max_length=MAX_SEGMENT_CHARACTERS)
     confidence: float = Field(ge=0, le=1)
 
     @model_validator(mode="after")
@@ -286,35 +305,54 @@ class DynamicInterviewState(BaseModel):
     phase: DynamicInterviewPhase = DynamicInterviewPhase.START
     mode: Literal["offline", "shadow", "supervised_live"] = "offline"
 
-    questions: list[QuestionState] = Field(default_factory=list)
-    skill_parameters: list[SkillParameter] = Field(default_factory=list)
-    question_plan: list[QuestionPlanItem] = Field(default_factory=list)
+    questions: list[QuestionState] = Field(
+        default_factory=list, max_length=MAX_QUESTIONS
+    )
+    skill_parameters: list[SkillParameter] = Field(
+        default_factory=list, max_length=MAX_QUESTIONS
+    )
+    question_plan: list[QuestionPlanItem] = Field(
+        default_factory=list, max_length=MAX_QUESTIONS
+    )
     current_plan_index: int | None = Field(default=None, ge=0)
     current_question_id: int | None = Field(default=None, ge=1)
-    completed_question_ids: list[int] = Field(default_factory=list)
-    skipped_questions: list[SkippedQuestion] = Field(default_factory=list)
+    completed_question_ids: list[int] = Field(
+        default_factory=list, max_length=MAX_QUESTIONS
+    )
+    skipped_questions: list[SkippedQuestion] = Field(
+        default_factory=list, max_length=MAX_QUESTIONS
+    )
 
     current_turn: TurnState | None = None
     recent_events: Annotated[list[InterviewEvent], append_interview_events] = Field(
-        default_factory=list
+        default_factory=list, max_length=RECENT_EVENT_LIMIT
     )
-    intent_history: list[IntentDecision] = Field(default_factory=list)
+    intent_history: list[IntentDecision] = Field(
+        default_factory=list, max_length=MAX_INTENT_HISTORY
+    )
     repeat_counts: dict[str, int] = Field(default_factory=dict)
     clarification_counts: dict[str, int] = Field(default_factory=dict)
     audio_problem_count: int = Field(default=0, ge=0)
 
-    question_evaluations: list[DynamicQuestionEvaluation] = Field(default_factory=list)
-    skill_evidence: Annotated[list[SkillEvidence], append_skill_evidence] = Field(
-        default_factory=list
+    question_evaluations: list[DynamicQuestionEvaluation] = Field(
+        default_factory=list, max_length=MAX_QUESTIONS
     )
-    skill_assessments: list[SkillAssessment] = Field(default_factory=list)
+    skill_evidence: Annotated[list[SkillEvidence], append_skill_evidence] = Field(
+        default_factory=list, max_length=SKILL_EVIDENCE_LIMIT
+    )
+    skill_assessments: list[SkillAssessment] = Field(
+        default_factory=list, max_length=MAX_QUESTIONS
+    )
     coverage: dict[str, CoverageState] = Field(default_factory=dict)
 
     started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     remaining_seconds: float = Field(default=0, ge=0)
-    timer_events_emitted: list[str] = Field(default_factory=list)
+    timer_events_emitted: list[str] = Field(
+        default_factory=list, max_length=MAX_TIMER_EVENTS
+    )
 
     pending_effect: EffectRequest | None = None
+    last_effect_request: EffectRequest | None = None
     last_effect_result: EffectResult | None = None
     pending_interrupt: InterruptRequest | None = None
     recovery_reason: str | None = None
@@ -350,6 +388,15 @@ class DynamicInterviewState(BaseModel):
                 *plan_item.mandatory_skill_coverage,
             ]:
                 require_skill_id(skill_id, field_name="question_plan")
+        if self.current_plan_index is not None:
+            if self.current_plan_index >= len(self.question_plan):
+                raise ValueError("current_plan_index is outside question_plan")
+            if (
+                self.current_question_id is not None
+                and self.question_plan[self.current_plan_index].question_id
+                != self.current_question_id
+            ):
+                raise ValueError("current_plan_index must point to current_question_id")
         for skipped in self.skipped_questions:
             require_question_id(skipped.question_id, field_name="skipped_questions")
         for question_id in [*self.completed_question_ids, *self.recent_question_ids]:
@@ -373,14 +420,29 @@ class DynamicInterviewState(BaseModel):
         evidence_ids = {evidence.evidence_id for evidence in self.skill_evidence}
         if len(evidence_ids) != len(self.skill_evidence):
             raise ValueError("skill_evidence must have unique evidence IDs")
+        evidence_skill_ids = {
+            evidence.evidence_id: evidence.skill_id for evidence in self.skill_evidence
+        }
         for assessment in self.skill_assessments:
             require_skill_id(assessment.skill_id, field_name="skill_assessments")
             if not set(assessment.evidence_ids).issubset(evidence_ids):
                 raise ValueError("skill_assessments reference unknown evidence IDs")
+            if any(
+                evidence_skill_ids[evidence_id] != assessment.skill_id
+                for evidence_id in assessment.evidence_ids
+            ):
+                raise ValueError(
+                    "skill_assessments can cite only evidence for their skill"
+                )
         for skill_id, coverage in self.coverage.items():
             require_skill_id(skill_id, field_name="coverage")
             if not set(coverage.evidence_ids).issubset(evidence_ids):
                 raise ValueError("coverage references unknown evidence IDs")
+            if any(
+                evidence_skill_ids[evidence_id] != skill_id
+                for evidence_id in coverage.evidence_ids
+            ):
+                raise ValueError("coverage can cite only evidence for its skill")
 
         for event in self.recent_events:
             if event.session_id != self.session_id:
@@ -391,6 +453,23 @@ class DynamicInterviewState(BaseModel):
             self.pending_effect.session_id != self.session_id
         ):
             raise ValueError("pending_effect must use this state session_id")
+        if self.last_effect_request is not None and (
+            self.last_effect_request.session_id != self.session_id
+        ):
+            raise ValueError("last_effect_request must use this state session_id")
+        if self.last_effect_result is not None:
+            effect_request = self.last_effect_request or self.pending_effect
+            if effect_request is None:
+                raise ValueError("last_effect_result requires its effect request")
+            if (
+                self.last_effect_result.effect_id != effect_request.effect_id
+                or self.last_effect_result.session_id != effect_request.session_id
+                or self.last_effect_result.effect_type != effect_request.effect_type
+                or self.last_effect_result.idempotency_key
+                != effect_request.idempotency_key
+                or self.last_effect_result.payload_hash != effect_request.payload_hash
+            ):
+                raise ValueError("last_effect_result does not match its effect request")
         return self
 
     @property

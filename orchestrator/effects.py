@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from enum import StrEnum
 from typing import Literal
@@ -41,6 +43,15 @@ class EffectRequest(BaseModel):
     session_id: str = Field(min_length=1)
     payload: dict[str, JsonValue] = Field(default_factory=dict)
 
+    @property
+    def payload_hash(self) -> str:
+        """Stable payload identity used to reconcile a recorded effect result."""
+
+        payload_json = json.dumps(
+            self.payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        return hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+
 
 class EffectResult(BaseModel):
     """The append-only execution result used by recovery policy."""
@@ -49,6 +60,10 @@ class EffectResult(BaseModel):
 
     schema_version: Literal[1] = 1
     effect_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    effect_type: EffectType
+    idempotency_key: str = Field(min_length=1)
+    payload_hash: str = Field(min_length=64, max_length=64)
     status: EffectStatus
     result_summary: str = Field(min_length=1)
     started_at: datetime | None = None

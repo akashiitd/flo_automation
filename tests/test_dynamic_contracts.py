@@ -20,7 +20,10 @@ from orchestrator.reducers import (
     append_skill_evidence,
 )
 from orchestrator.state import (
+    CoverageState,
+    CoverageStatus,
     DynamicInterviewState,
+    InterruptRequest,
     QuestionContentType,
     QuestionMappingSource,
     QuestionPlanItem,
@@ -31,6 +34,7 @@ from orchestrator.state import (
     SkillEvidence,
     SkillParameter,
     SkillParametersArtifact,
+    TurnState,
 )
 
 
@@ -82,14 +86,19 @@ def test_event_ledger_deduplicates_across_a_reopened_process_boundary(
         source=EventSource.OPERATOR,
         session_id="session-001",
     )
-    ledger_path = tmp_path / "graph_events.jsonl"
+    ledger_path = tmp_path / "event_ledger.sqlite3"
 
-    assert EventLedger(ledger_path).append(event) is True
-    reopened_ledger = EventLedger(ledger_path)
+    first_ledger = EventLedger(ledger_path)
+    second_ledger = EventLedger(ledger_path)
+    later_event = event.model_copy(update={"event_id": "durable-event-002"})
 
-    assert reopened_ledger.append(event) is False
+    assert first_ledger.append(event) is True
+    assert second_ledger.append(later_event) is True
+    assert first_ledger.append(later_event) is False
     with pytest.raises(EventLedgerConflictError, match="event_id"):
-        reopened_ledger.append(event.model_copy(update={"payload": {"changed": True}}))
+        EventLedger(ledger_path).append(
+            event.model_copy(update={"payload": {"changed": True}})
+        )
 
 
 def test_intent_requires_candidate_evidence_and_effects_are_idempotent_contracts() -> (
@@ -117,6 +126,10 @@ def test_intent_requires_candidate_evidence_and_effects_are_idempotent_contracts
     )
     result = EffectResult(
         effect_id=request.effect_id,
+        session_id=request.session_id,
+        effect_type=request.effect_type,
+        idempotency_key=request.idempotency_key,
+        payload_hash=request.payload_hash,
         status=EffectStatus.UNCERTAIN,
         result_summary="process stopped after playback began",
     )
@@ -229,3 +242,109 @@ def test_dynamic_state_round_trips_with_skill_evidence_and_explicit_reducers() -
     assert (
         SkillAssessment.model_validate_json(assessment.model_dump_json()) == assessment
     )
+    intent = IntentDecision(
+        intent=CandidateIntent.ANSWER_COMPLETE,
+        confidence=0.9,
+        evidence_span="That is all.",
+        answer_text_to_keep="I would validate input and require authorization.",
+        safe_route=SafeRoute.COMPLETE_TURN,
+    )
+    effect_request = EffectRequest(
+        effect_id="effect-002",
+        effect_type=EffectType.EVALUATE_ANSWER,
+        idempotency_key="session-001:question-5:evaluate",
+        session_id=state.session_id,
+    )
+    effect_result = EffectResult(
+        effect_id=effect_request.effect_id,
+        session_id=effect_request.session_id,
+        effect_type=effect_request.effect_type,
+        idempotency_key=effect_request.idempotency_key,
+        payload_hash=effect_request.payload_hash,
+        status=EffectStatus.COMPLETED,
+        result_summary="evaluation stored",
+    )
+    populated_state = DynamicInterviewState.model_validate(
+        {
+            **state.model_dump(),
+            "current_plan_index": 0,
+            "current_question_id": question.id,
+            "current_turn": TurnState(
+                question_id=question.id,
+                answer_segments=[evidence.transcript_evidence],
+            ),
+            "recent_events": [
+                InterviewEvent(
+                    event_id="same-session-event",
+                    event_type=EventType.TURN_COMPLETE,
+                    occurred_at=datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+                    source=EventSource.CANDIDATE_ASR,
+                    session_id=state.session_id,
+                    question_id=question.id,
+                )
+            ],
+            "intent_history": [intent],
+            "skill_assessments": [assessment],
+            "coverage": {
+                skill.id: CoverageState(
+                    status=CoverageStatus.SUFFICIENT,
+                    confidence=0.8,
+                    evidence_ids=[evidence.evidence_id],
+                )
+            },
+            "pending_effect": effect_request,
+            "last_effect_request": effect_request,
+            "last_effect_result": effect_result,
+            "pending_interrupt": InterruptRequest(
+                kind="start_approval", reason="operator confirmation required"
+            ),
+        }
+    )
+    assert (
+        DynamicInterviewState.model_validate_json(populated_state.model_dump_json())
+        == populated_state
+    )
+    with pytest.raises(ValidationError, match="only evidence for their skill"):
+        DynamicInterviewState.model_validate(
+            {
+                **state.model_dump(),
+                "skill_parameters": [
+                    skill,
+                    skill.model_copy(
+                        update={"id": "backend-optimization", "name": "Backend"}
+                    ),
+                ],
+                "skill_assessments": [
+                    assessment.model_copy(update={"skill_id": "backend-optimization"})
+                ],
+            }
+        )
+    with pytest.raises(ValidationError, match="does not match"):
+        DynamicInterviewState.model_validate(
+            {
+                **populated_state.model_dump(),
+                "last_effect_result": effect_result.model_copy(
+                    update={"payload_hash": "0" * 64}
+                ),
+            }
+        )
+    with pytest.raises(ValidationError, match="current_plan_index"):
+        DynamicInterviewState.model_validate(
+            {**state.model_dump(), "current_plan_index": 1}
+        )
+    with pytest.raises(ValidationError, match="recent_events"):
+        DynamicInterviewState.model_validate(
+            {
+                **state.model_dump(),
+                "recent_events": [
+                    InterviewEvent(
+                        event_id=f"window-{index}",
+                        event_type=EventType.SESSION_STARTED,
+                        occurred_at=datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
+                        source=EventSource.OPERATOR,
+                        session_id=state.session_id,
+                    )
+                    for index in range(RECENT_EVENT_LIMIT + 1)
+                ],
+            }
+        )

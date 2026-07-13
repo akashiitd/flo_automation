@@ -1,8 +1,9 @@
-"""Durable, append-only event-ID deduplication outside graph checkpoints."""
+"""Transactional event-ID deduplication outside bounded graph checkpoints."""
 
 from __future__ import annotations
 
 import os
+import sqlite3
 from pathlib import Path
 
 from orchestrator.events import InterviewEvent
@@ -13,58 +14,47 @@ class EventLedgerConflictError(ValueError):
 
 
 class EventLedger:
-    """Persist full event identities while graph state retains only a recent window."""
+    """Claim event IDs atomically across graph restarts and ingress workers."""
 
     def __init__(self, path: Path) -> None:
         self._path = path
-        self._events_by_id: dict[str, InterviewEvent] | None = None
 
-    def _load(self) -> dict[str, InterviewEvent]:
-        if self._events_by_id is not None:
-            return self._events_by_id
-        events_by_id: dict[str, InterviewEvent] = {}
-        if self._path.exists():
-            for line_number, line in enumerate(
-                self._path.read_text(encoding="utf-8").splitlines(), start=1
-            ):
-                if not line.strip():
-                    continue
-                event = InterviewEvent.model_validate_json(line)
-                prior = events_by_id.get(event.event_id)
-                if prior is not None and prior != event:
-                    raise EventLedgerConflictError(
-                        f"event_id {event.event_id!r} conflicts at line {line_number}"
-                    )
-                events_by_id[event.event_id] = event
-        self._events_by_id = events_by_id
-        return events_by_id
+    def _connect(self) -> sqlite3.Connection:
+        self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(self._path.parent, 0o700)
+        connection = sqlite3.connect(self._path)
+        os.chmod(self._path, 0o600)
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS event_ledger (
+                event_id TEXT PRIMARY KEY,
+                event_json TEXT NOT NULL
+            )
+            """
+        )
+        return connection
 
     def append(self, event: InterviewEvent) -> bool:
-        """Record an event once; return false for an exact durable duplicate."""
+        """Atomically record an event; return false for an exact duplicate."""
 
-        events_by_id = self._load()
-        prior = events_by_id.get(event.event_id)
-        if prior is not None:
-            if prior != event:
-                raise EventLedgerConflictError(
-                    f"event_id {event.event_id!r} was reused with different content"
+        event_json = event.model_dump_json()
+        with self._connect() as connection:
+            try:
+                connection.execute(
+                    "INSERT INTO event_ledger (event_id, event_json) VALUES (?, ?)",
+                    (event.event_id, event_json),
                 )
-            return False
-
-        self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor = os.open(
-            self._path,
-            os.O_APPEND | os.O_CREAT | os.O_WRONLY,
-            0o600,
-        )
-        try:
-            with os.fdopen(descriptor, "a", encoding="utf-8") as stream:
-                stream.write(event.model_dump_json() + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-        finally:
-            os.chmod(self._path, 0o600)
-        events_by_id[event.event_id] = event
+            except sqlite3.IntegrityError:
+                stored = connection.execute(
+                    "SELECT event_json FROM event_ledger WHERE event_id = ?",
+                    (event.event_id,),
+                ).fetchone()
+                assert stored is not None
+                if InterviewEvent.model_validate_json(stored[0]) != event:
+                    raise EventLedgerConflictError(
+                        f"event_id {event.event_id!r} was reused with different content"
+                    )
+                return False
         return True
 
 
