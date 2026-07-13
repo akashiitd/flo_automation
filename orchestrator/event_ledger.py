@@ -58,12 +58,22 @@ class EventLedger:
                     (event.session_id, event.event_id),
                 ).fetchone()
                 assert stored is not None
-                if InterviewEvent.model_validate_json(stored[0]) != event:
+                recorded_event = InterviewEvent.model_validate_json(stored[0])
+                if not self._same_observation(recorded_event, event):
                     raise EventLedgerConflictError(
                         f"event_id {event.event_id!r} was reused with different content"
                     )
                 return False
         return True
+
+    @staticmethod
+    def _same_observation(recorded: InterviewEvent, incoming: InterviewEvent) -> bool:
+        """Allow receipt-time drift when a stable callback is redelivered after restart."""
+
+        return (
+            recorded.model_copy(update={"occurred_at": incoming.occurred_at})
+            == incoming
+        )
 
 
 __all__ = ["EventLedger", "EventLedgerConflictError"]
