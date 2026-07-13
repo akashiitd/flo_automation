@@ -326,6 +326,9 @@ class DynamicInterviewState(BaseModel):
         default_factory=list, max_length=MAX_QUESTIONS
     )
 
+    # Event ingress is transient: the parent graph consumes it into
+    # ``recent_events`` before routing a state transition.
+    pending_event: InterviewEvent | None = None
     current_turn: TurnState | None = None
     recent_events: Annotated[list[InterviewEvent], append_interview_events] = Field(
         default_factory=list, max_length=RECENT_EVENT_LIMIT
@@ -465,6 +468,13 @@ class DynamicInterviewState(BaseModel):
                 raise ValueError("recent_events must use this state session_id")
             if event.question_id is not None:
                 require_question_id(event.question_id, field_name="recent_events")
+        if self.pending_event is not None:
+            if self.pending_event.session_id != self.session_id:
+                raise ValueError("pending_event must use this state session_id")
+            if self.pending_event.question_id is not None:
+                require_question_id(
+                    self.pending_event.question_id, field_name="pending_event"
+                )
         if self.pending_effect is not None and (
             self.pending_effect.session_id != self.session_id
         ):

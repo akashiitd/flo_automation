@@ -1,0 +1,12 @@
+{
+  "turns": [
+    {
+      "question_id": 1,
+      "segments": ["Synthetic answer one."]
+    },
+    {
+      "question_id": 2,
+      "segments": ["Synthetic answer two."]
+    }
+  ]
+}

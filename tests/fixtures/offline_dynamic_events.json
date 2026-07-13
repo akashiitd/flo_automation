@@ -1,0 +1,30 @@
+{
+  "events": [
+    {
+      "event_id": "fixture-start",
+      "event_type": "SESSION_STARTED",
+      "occurred_at": "2026-07-13T08:00:00+00:00",
+      "source": "operator",
+      "session_id": "offline-fixture-session",
+      "payload": {"transcript_fixture_id": "turn-one"}
+    },
+    {
+      "event_id": "fixture-turn-one-complete",
+      "event_type": "TURN_COMPLETE",
+      "occurred_at": "2026-07-13T08:03:00+00:00",
+      "source": "candidate_asr",
+      "session_id": "offline-fixture-session",
+      "question_id": 1,
+      "payload": {"transcript_fixture_id": "turn-two"}
+    },
+    {
+      "event_id": "fixture-turn-two-complete",
+      "event_type": "TURN_COMPLETE",
+      "occurred_at": "2026-07-13T08:06:00+00:00",
+      "source": "candidate_asr",
+      "session_id": "offline-fixture-session",
+      "question_id": 2,
+      "payload": {}
+    }
+  ]
+}
