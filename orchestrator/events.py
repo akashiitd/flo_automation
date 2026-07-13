@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
@@ -58,8 +59,9 @@ class EventType(StrEnum):
 class InterviewEvent(BaseModel):
     """One immutable, JSON-safe event accepted by a single interview session."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    schema_version: Literal[1] = 1
     event_id: str = Field(min_length=1)
     event_type: EventType
     occurred_at: datetime

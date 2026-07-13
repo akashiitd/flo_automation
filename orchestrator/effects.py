@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
@@ -31,8 +32,9 @@ class EffectStatus(StrEnum):
 class EffectRequest(BaseModel):
     """An idempotent request ready for the separately supervised executor."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    schema_version: Literal[1] = 1
     effect_id: str = Field(min_length=1)
     effect_type: EffectType
     idempotency_key: str = Field(min_length=1)
@@ -43,8 +45,9 @@ class EffectRequest(BaseModel):
 class EffectResult(BaseModel):
     """The append-only execution result used by recovery policy."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    schema_version: Literal[1] = 1
     effect_id: str = Field(min_length=1)
     status: EffectStatus
     result_summary: str = Field(min_length=1)

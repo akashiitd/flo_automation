@@ -107,10 +107,16 @@ class CoverageStatus(StrEnum):
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 
 
+class DynamicQuestionEvaluation(QuestionEvaluation):
+    """Strict evaluation record accepted by persisted dynamic-controller state."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
 class QuestionState(BaseModel):
     """Read-only question data retained by the dynamic controller."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     id: int = Field(ge=1)
     question_text: str = Field(min_length=1)
@@ -121,7 +127,7 @@ class QuestionState(BaseModel):
 class SkillParameter(BaseModel):
     """One read-only FloCareer skill assessment dimension."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -131,10 +137,27 @@ class SkillParameter(BaseModel):
     source: str = "flocareer_dom"
 
 
+class SkillParametersArtifact(BaseModel):
+    """Versioned, read-only artifact extracted from FloCareer skill controls."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: Literal[1] = 1
+    read_only: Literal[True] = True
+    parameters: list[SkillParameter] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def parameters_must_have_unique_ids(self) -> SkillParametersArtifact:
+        parameter_ids = {parameter.id for parameter in self.parameters}
+        if len(parameter_ids) != len(self.parameters):
+            raise ValueError("skill parameters must have unique IDs")
+        return self
+
+
 class QuestionPlanItem(BaseModel):
     """The audited decision to ask or skip one scanned source question."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     question_id: int = Field(ge=1)
     content_type: QuestionContentType
@@ -156,10 +179,26 @@ class QuestionPlanItem(BaseModel):
         return self
 
 
+class QuestionPlanArtifact(BaseModel):
+    """Versioned offline output that records every ask-or-skip decision."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: Literal[1] = 1
+    items: list[QuestionPlanItem] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def items_must_have_unique_question_ids(self) -> QuestionPlanArtifact:
+        question_ids = {item.question_id for item in self.items}
+        if len(question_ids) != len(self.items):
+            raise ValueError("question-plan items must have unique question IDs")
+        return self
+
+
 class SkippedQuestion(BaseModel):
     """The runtime reason a planned question was not asked."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     question_id: int = Field(ge=1)
     reason: str = Field(min_length=1)
@@ -168,7 +207,7 @@ class SkippedQuestion(BaseModel):
 class TurnState(BaseModel):
     """Bounded active-turn data; full transcripts remain external artifacts."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     question_id: int = Field(ge=1)
     answer_segments: list[str] = Field(default_factory=list)
@@ -180,7 +219,7 @@ class TurnState(BaseModel):
 class SkillEvidence(BaseModel):
     """One question-grounded citation supporting one skill assessment."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     evidence_id: str = Field(min_length=1)
     skill_id: str = Field(min_length=1)
@@ -194,7 +233,7 @@ class SkillEvidence(BaseModel):
 class SkillAssessment(BaseModel):
     """Evidence-grounded proposed assessment, never an unattended platform rating."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     skill_id: str = Field(min_length=1)
     proposed_score: int | None = Field(default=None, ge=1, le=5)
@@ -218,7 +257,7 @@ class SkillAssessment(BaseModel):
 class CoverageState(BaseModel):
     """Planning confidence and evidence status for one skill parameter."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     status: CoverageStatus
     confidence: float = Field(ge=0, le=1)
@@ -228,7 +267,7 @@ class CoverageState(BaseModel):
 class InterruptRequest(BaseModel):
     """A human decision the graph cannot safely make alone."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     kind: str = Field(min_length=1)
     reason: str = Field(min_length=1)
@@ -238,7 +277,7 @@ class InterruptRequest(BaseModel):
 class DynamicInterviewState(BaseModel):
     """JSON-safe, bounded state checkpointed for one isolated interview thread."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     schema_version: Literal[1] = 1
     thread_id: str = Field(min_length=1)
@@ -264,7 +303,7 @@ class DynamicInterviewState(BaseModel):
     clarification_counts: dict[str, int] = Field(default_factory=dict)
     audio_problem_count: int = Field(default=0, ge=0)
 
-    question_evaluations: list[QuestionEvaluation] = Field(default_factory=list)
+    question_evaluations: list[DynamicQuestionEvaluation] = Field(default_factory=list)
     skill_evidence: Annotated[list[SkillEvidence], append_skill_evidence] = Field(
         default_factory=list
     )
@@ -284,3 +323,81 @@ class DynamicInterviewState(BaseModel):
     final_review_status: Literal["not_ready", "pending", "approved", "rejected"] = (
         "not_ready"
     )
+
+    @model_validator(mode="after")
+    def references_must_belong_to_this_session(self) -> DynamicInterviewState:
+        """Keep one checkpoint isolated from other sessions and source artifacts."""
+
+        question_ids = {question.id for question in self.questions}
+        if len(question_ids) != len(self.questions):
+            raise ValueError("questions must have unique IDs")
+        skill_ids = {skill.id for skill in self.skill_parameters}
+        if len(skill_ids) != len(self.skill_parameters):
+            raise ValueError("skill_parameters must have unique IDs")
+
+        def require_question_id(question_id: int, *, field_name: str) -> None:
+            if question_id not in question_ids:
+                raise ValueError(f"{field_name} references an unknown question_id")
+
+        def require_skill_id(skill_id: str, *, field_name: str) -> None:
+            if skill_id not in skill_ids:
+                raise ValueError(f"{field_name} references an unknown skill_id")
+
+        for plan_item in self.question_plan:
+            require_question_id(plan_item.question_id, field_name="question_plan")
+            for skill_id in [
+                *plan_item.target_skill_ids,
+                *plan_item.mandatory_skill_coverage,
+            ]:
+                require_skill_id(skill_id, field_name="question_plan")
+        for skipped in self.skipped_questions:
+            require_question_id(skipped.question_id, field_name="skipped_questions")
+        for question_id in [*self.completed_question_ids, *self.recent_question_ids]:
+            require_question_id(question_id, field_name="question state")
+        if self.current_question_id is not None:
+            require_question_id(
+                self.current_question_id, field_name="current_question_id"
+            )
+        if self.current_turn is not None:
+            require_question_id(
+                self.current_turn.question_id, field_name="current_turn"
+            )
+        for evaluation in self.question_evaluations:
+            require_question_id(
+                evaluation.question_id, field_name="question_evaluations"
+            )
+        for evidence in self.skill_evidence:
+            require_question_id(evidence.question_id, field_name="skill_evidence")
+            require_skill_id(evidence.skill_id, field_name="skill_evidence")
+
+        evidence_ids = {evidence.evidence_id for evidence in self.skill_evidence}
+        if len(evidence_ids) != len(self.skill_evidence):
+            raise ValueError("skill_evidence must have unique evidence IDs")
+        for assessment in self.skill_assessments:
+            require_skill_id(assessment.skill_id, field_name="skill_assessments")
+            if not set(assessment.evidence_ids).issubset(evidence_ids):
+                raise ValueError("skill_assessments reference unknown evidence IDs")
+        for skill_id, coverage in self.coverage.items():
+            require_skill_id(skill_id, field_name="coverage")
+            if not set(coverage.evidence_ids).issubset(evidence_ids):
+                raise ValueError("coverage references unknown evidence IDs")
+
+        for event in self.recent_events:
+            if event.session_id != self.session_id:
+                raise ValueError("recent_events must use this state session_id")
+            if event.question_id is not None:
+                require_question_id(event.question_id, field_name="recent_events")
+        if self.pending_effect is not None and (
+            self.pending_effect.session_id != self.session_id
+        ):
+            raise ValueError("pending_effect must use this state session_id")
+        return self
+
+    @property
+    def recent_question_ids(self) -> list[int]:
+        """Question IDs currently represented by repeat/clarification counters."""
+
+        return [
+            int(question_id)
+            for question_id in {*self.repeat_counts, *self.clarification_counts}
+        ]

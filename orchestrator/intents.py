@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -51,8 +52,9 @@ class SafeRoute(StrEnum):
 class IntentDecision(BaseModel):
     """A structured recommendation grounded in an observed candidate utterance."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    schema_version: Literal[1] = 1
     intent: CandidateIntent
     confidence: float = Field(ge=0, le=1)
     evidence_span: str = Field(min_length=1)
