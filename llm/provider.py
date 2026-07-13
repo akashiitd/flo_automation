@@ -228,7 +228,9 @@ class OpenAICompatibleProvider:
 
             try:
                 parsed = parse_json_object(self._message_content(payload))
-                validated = schema.model_validate(parsed)
+                # Strict schema contracts should validate the model's JSON as JSON.
+                # This preserves enum and scalar types while rejecting non-JSON forms.
+                validated = schema.model_validate_json(json.dumps(parsed))
             except (JsonRepairError, StructuredOutputError, ValidationError) as error:
                 last_error = error
                 continue

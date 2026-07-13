@@ -74,6 +74,14 @@ class IntentDecision(BaseModel):
 
         if self.evidence_span.casefold() not in candidate_transcript.casefold():
             raise ValueError("evidence_span must occur in the candidate transcript")
+        if (
+            self.answer_text_to_keep
+            and self.answer_text_to_keep.casefold()
+            not in candidate_transcript.casefold()
+        ):
+            raise ValueError(
+                "answer_text_to_keep must occur in the candidate transcript"
+            )
         return self
 
 

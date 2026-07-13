@@ -19,7 +19,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from orchestrator.effects import EffectRequest, EffectType
-from orchestrator.events import EventType
+from orchestrator.events import EventSource, EventType
+from orchestrator.intent_routing import IntentRouter, RoutedIntent, apply_routed_intent
+from orchestrator.intents import CandidateIntent, IntentDecision, SafeRoute
 from orchestrator.state import (
     CoverageStatus,
     DynamicInterviewPhase,
@@ -110,7 +112,14 @@ def _record_offline_event(state: DynamicInterviewState) -> DynamicStateUpdate:
 
 def _event_route(
     state: DynamicInterviewState,
-) -> Literal["complete_turn", "question_planning", "finish", "clear_event"]:
+) -> Literal[
+    "complete_turn",
+    "question_planning",
+    "classify_intent",
+    "reject_classified_intent",
+    "finish",
+    "clear_event",
+]:
     """Choose a bounded Phase 5 transition for the consumed fixture event."""
 
     assert state.pending_event is not None
@@ -121,12 +130,149 @@ def _event_route(
         EventType.TIMER_WARNING,
     }:
         return "question_planning"
+    if state.pending_event.event_type is EventType.TRANSCRIPT_FINAL:
+        return "classify_intent"
+    if state.pending_event.event_type is EventType.TURN_INTENT_CLASSIFIED:
+        return "reject_classified_intent"
     if state.pending_event.event_type in {
         EventType.TIME_LIMIT_REACHED,
         EventType.OPERATOR_STOP,
     }:
         return "finish"
     return "clear_event"
+
+
+def _intent_action_route(
+    state: DynamicInterviewState,
+) -> Literal["question_planning", "done"]:
+    """Select another planned question only after a candidate-requested defer."""
+
+    if state.phase is DynamicInterviewPhase.SELECT_QUESTION:
+        return "question_planning"
+    return "done"
+
+
+def _rejected_intent_event(state: DynamicInterviewState) -> DynamicStateUpdate:
+    """Reject classifier results injected through the external event boundary."""
+
+    return _needs_operator_for_intent_event(
+        state, "classified intents must be produced inside the verified local router"
+    )
+
+
+def _needs_operator_for_intent_event(
+    state: DynamicInterviewState, diagnostic: str
+) -> DynamicStateUpdate:
+    """Prepare an operator stop without trusting an external control payload."""
+
+    routed = RoutedIntent(
+        decision=IntentDecision(
+            intent=CandidateIntent.UNKNOWN,
+            confidence=0.0,
+            evidence_span="invalid intent event",
+            answer_text_to_keep="",
+            candidate_requested_action=None,
+            safe_route=SafeRoute.NEEDS_OPERATOR,
+        ),
+        diagnostic=diagnostic,
+    )
+    return apply_routed_intent(state, routed)
+
+
+def _classify_candidate_transcript(
+    intent_router: IntentRouter,
+) -> Any:
+    """Build the only graph ingress that can classify candidate speech."""
+
+    async def classify(state: DynamicInterviewState) -> DynamicStateUpdate:
+        event = state.pending_event
+        assert event is not None
+        if (
+            event.source is not EventSource.CANDIDATE_ASR
+            or state.current_question_id is None
+            or event.question_id != state.current_question_id
+            or not isinstance(event.payload.get("text"), str)
+        ):
+            return _needs_operator_for_intent_event(
+                state, "invalid candidate transcript event"
+            )
+        transcript = event.payload["text"]
+        question_key = str(state.current_question_id)
+        deterministic = intent_router.route(
+            transcript, ambiguity_count=state.ambiguity_counts.get(question_key, 0)
+        )
+        if deterministic.decision.intent is not CandidateIntent.UNKNOWN:
+            routed = deterministic
+        elif intent_router.has_local_classifier:
+            routed = await intent_router.classify_and_route(
+                _accumulated_candidate_utterance(state.current_turn, transcript),
+                ambiguity_count=state.ambiguity_counts.get(question_key, 0),
+                clarification_count=state.clarification_counts.get(question_key, 0),
+            )
+        else:
+            routed = _answer_content_fallback(transcript)
+        update = apply_routed_intent(state, routed)
+        if routed.decision.intent in {
+            CandidateIntent.UNKNOWN,
+            CandidateIntent.ANSWER_CONTENT,
+            CandidateIntent.ANSWER_CONTINUATION,
+        }:
+            update["current_turn"] = _append_answer_segment(
+                state.current_turn, transcript
+            )
+        return update
+
+    return classify
+
+
+def _append_answer_segment(turn: TurnState | None, transcript: str) -> TurnState | None:
+    """Retain a bounded candidate answer segment only in its active turn."""
+
+    bounded = transcript[-4_000:]
+    if turn is None or bounded in turn.answer_segments:
+        return turn
+    return turn.model_copy(
+        update={"answer_segments": [*turn.answer_segments, bounded][-100:]}
+    )
+
+
+def _accumulated_candidate_utterance(turn: TurnState | None, latest: str) -> str:
+    """Use answer-bound recent ASR content for semantic intent classification."""
+
+    if turn is None:
+        return latest
+    return " ".join([*turn.answer_segments, latest])
+
+
+def _answer_content_fallback(transcript: str) -> RoutedIntent:
+    """Keep ordinary offline ASR as answer evidence when no local model is wired."""
+
+    bounded = transcript[-4_000:]
+    return RoutedIntent(
+        decision=IntentDecision(
+            intent=CandidateIntent.ANSWER_CONTENT,
+            confidence=1.0,
+            evidence_span=bounded,
+            answer_text_to_keep=bounded,
+            candidate_requested_action=None,
+            safe_route=SafeRoute.CONTINUE_LISTENING,
+        ),
+        diagnostic="semantic_classifier_unavailable_treated_as_answer_content",
+    )
+
+
+def _ingress_route(
+    state: DynamicInterviewState,
+) -> Literal["record_event", "clear_event"]:
+    """Drop redelivered events before they can mutate counters or routes."""
+
+    if state.pending_event is None:
+        raise ValueError("offline graph invocations require a pending_event")
+    if any(
+        event.event_id == state.pending_event.event_id for event in state.recent_events
+    ):
+        return "clear_event"
+    return "record_event"
 
 
 def _complete_current_turn(state: DynamicInterviewState) -> DynamicStateUpdate:
@@ -200,6 +346,16 @@ def _select_next_question(state: DynamicInterviewState) -> DynamicStateUpdate:
         for index, item in enumerate(state.question_plan)
         if item.selected and item.question_id not in unavailable_question_ids
     ]
+
+    # A candidate's "return later" request is not a permanent skip. Ask every
+    # other eligible question first, then revisit the deferred item before close.
+    non_deferred_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate[1].question_id not in state.deferred_question_ids
+    ]
+    if non_deferred_candidates:
+        candidates = non_deferred_candidates
 
     coverage_skips = [
         SkippedQuestion(
@@ -337,7 +493,11 @@ def build_question_planning_subgraph() -> OfflineInterviewSubgraph:
     return cast(OfflineInterviewSubgraph, builder.compile())
 
 
-def build_offline_interview_graph(*, checkpointer: BaseCheckpointSaver[Any]) -> Any:
+def build_offline_interview_graph(
+    *,
+    checkpointer: BaseCheckpointSaver[Any],
+    intent_router: IntentRouter | None = None,
+) -> Any:
     """Build the Phase 5 parent graph for saved offline event fixtures only.
 
     ``build_question_planning_subgraph`` is deliberately compiled and embedded
@@ -346,24 +506,39 @@ def build_offline_interview_graph(*, checkpointer: BaseCheckpointSaver[Any]) -> 
     """
 
     planning_subgraph = build_question_planning_subgraph()
+    router = intent_router or IntentRouter()
     builder = StateGraph(DynamicInterviewState)
     builder.add_node("record_event", _record_offline_event)
     builder.add_node("complete_turn", _complete_current_turn)
+    builder.add_node("classify_intent", _classify_candidate_transcript(router))
+    builder.add_node("reject_classified_intent", _rejected_intent_event)
     builder.add_node("question_planning", planning_subgraph)
     builder.add_node("finish", _finish_offline_interview)
     builder.add_node("clear_event", _clear_pending_event)
-    builder.add_edge(START, "record_event")
+    builder.add_conditional_edges(
+        START,
+        _ingress_route,
+        {"record_event": "record_event", "clear_event": "clear_event"},
+    )
     builder.add_conditional_edges(
         "record_event",
         _event_route,
         {
             "complete_turn": "complete_turn",
             "question_planning": "question_planning",
+            "classify_intent": "classify_intent",
+            "reject_classified_intent": "reject_classified_intent",
             "finish": "finish",
             "clear_event": "clear_event",
         },
     )
     builder.add_edge("complete_turn", "question_planning")
+    builder.add_conditional_edges(
+        "classify_intent",
+        _intent_action_route,
+        {"question_planning": "question_planning", "done": END},
+    )
+    builder.add_edge("reject_classified_intent", END)
     builder.add_edge("question_planning", END)
     builder.add_edge("finish", END)
     builder.add_edge("clear_event", END)

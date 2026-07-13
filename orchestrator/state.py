@@ -322,6 +322,9 @@ class DynamicInterviewState(BaseModel):
     completed_question_ids: list[int] = Field(
         default_factory=list, max_length=MAX_QUESTIONS
     )
+    deferred_question_ids: list[int] = Field(
+        default_factory=list, max_length=MAX_QUESTIONS
+    )
     skipped_questions: list[SkippedQuestion] = Field(
         default_factory=list, max_length=MAX_QUESTIONS
     )
@@ -338,6 +341,7 @@ class DynamicInterviewState(BaseModel):
     )
     repeat_counts: dict[str, int] = Field(default_factory=dict)
     clarification_counts: dict[str, int] = Field(default_factory=dict)
+    ambiguity_counts: dict[str, int] = Field(default_factory=dict)
     audio_problem_count: int = Field(default=0, ge=0)
 
     question_evaluations: list[DynamicQuestionEvaluation] = Field(
@@ -405,7 +409,11 @@ class DynamicInterviewState(BaseModel):
                 raise ValueError("current_plan_index must point to current_question_id")
         for skipped in self.skipped_questions:
             require_question_id(skipped.question_id, field_name="skipped_questions")
-        for question_id in [*self.completed_question_ids, *self.recent_question_ids]:
+        for question_id in [
+            *self.completed_question_ids,
+            *self.deferred_question_ids,
+            *self.recent_question_ids,
+        ]:
             require_question_id(question_id, field_name="question state")
         if self.current_question_id is not None:
             require_question_id(
@@ -510,5 +518,10 @@ class DynamicInterviewState(BaseModel):
 
         return [
             int(question_id)
-            for question_id in {*self.repeat_counts, *self.clarification_counts}
+            for question_id in {
+                *self.repeat_counts,
+                *self.clarification_counts,
+                *self.ambiguity_counts,
+            }
+            if question_id != "session"
         ]
