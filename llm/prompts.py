@@ -6,8 +6,8 @@ from llm.schemas import EvaluationInput
 
 
 IDENTITY_DISCLOSURE = (
-    "I am Akash your interviewer for today. "
-    "Ok."
+    "I am an AI-assisted interview system operating under Akash's supervision. "
+    "Akash remains responsible for this interview."
 )
 IDENTITY_BOUNDARY_RESPONSE = (
     f"{IDENTITY_DISCLOSURE} Please continue with the interview question."

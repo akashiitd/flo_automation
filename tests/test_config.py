@@ -30,7 +30,9 @@ def test_settings_load_dotenv_and_allow_environment_overrides(tmp_path: Path) ->
     assert settings.qwen_tts_base_url == "http://127.0.0.1:7789"
     assert settings.interviewer_audio_output_device == "INTERVIEWER_TO_CALL"
     assert settings.candidate_audio_input_device == "CANDIDATE_ONLY"
-    assert settings.flocareer_speaker_output_device == "Jabra Evolve2 65 Flex (Bluetooth)"
+    assert (
+        settings.flocareer_speaker_output_device == "Jabra Evolve2 65 Flex (Bluetooth)"
+    )
 
 
 def test_settings_reject_non_loopback_qwen_service_url(tmp_path: Path) -> None:

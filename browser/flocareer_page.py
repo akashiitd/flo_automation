@@ -271,7 +271,8 @@ class FloCareerPage:
             (
                 (label, value)
                 for label, value in available
-                if value is not None and self._audio_device_matches(label, requested_label)
+                if value is not None
+                and self._audio_device_matches(label, requested_label)
             ),
             None,
         )
