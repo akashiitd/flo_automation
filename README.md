@@ -635,7 +635,7 @@ and human-approval boundaries described above.
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
-uvx ty check app browser evaluator llm transcriber main.py
+uvx ty check app browser evaluator llm orchestrator transcriber tts main.py
 ```
 
 The project currently has unit/integration coverage for configuration, health
