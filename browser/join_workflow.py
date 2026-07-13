@@ -8,11 +8,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from browser.action_guard import BrowserAction
 from browser.action_router import ActionRouter
 from browser.code_editor_workflow import CodeEditorResult
+
+if TYPE_CHECKING:
+    from browser.flocareer_page import FloCareerAudioConfiguration
 
 
 class JoinWorkflowError(RuntimeError):
@@ -64,6 +67,7 @@ class JoinLiveResult:
     action_log_path: Path
     room_state_log_path: Path | None = None
     code_editor_result: CodeEditorResult | None = None
+    audio_configuration: FloCareerAudioConfiguration | None = None
 
 
 @dataclass(frozen=True, slots=True)

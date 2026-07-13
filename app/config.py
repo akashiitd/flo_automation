@@ -43,6 +43,7 @@ DEFAULTS: dict[str, str] = {
     "QWEN_TTS_TIMEOUT_SECONDS": "45",
     "INTERVIEWER_AUDIO_OUTPUT_DEVICE": "INTERVIEWER_TO_CALL",
     "CANDIDATE_AUDIO_INPUT_DEVICE": "CANDIDATE_ONLY",
+    "FLOCAREER_SPEAKER_OUTPUT_DEVICE": "Jabra Evolve2 65 Flex (Bluetooth)",
     "RUNS_DIR": "runs",
     "DEFAULT_INTERVIEW_MINUTES": "25",
     "REQUIRE_APPROVAL_BEFORE_FINISH": "true",
@@ -144,6 +145,7 @@ class Settings:
     qwen_tts_timeout_seconds: float
     interviewer_audio_output_device: str
     candidate_audio_input_device: str
+    flocareer_speaker_output_device: str
     runs_dir: Path
     default_interview_minutes: int
     require_approval_before_finish: bool
@@ -216,6 +218,9 @@ class Settings:
                 "INTERVIEWER_AUDIO_OUTPUT_DEVICE"
             ].strip(),
             candidate_audio_input_device=values["CANDIDATE_AUDIO_INPUT_DEVICE"].strip(),
+            flocareer_speaker_output_device=values[
+                "FLOCAREER_SPEAKER_OUTPUT_DEVICE"
+            ].strip(),
             runs_dir=_resolve_path(root, values["RUNS_DIR"]),
             default_interview_minutes=_parse_int(
                 "DEFAULT_INTERVIEW_MINUTES", values["DEFAULT_INTERVIEW_MINUTES"]
@@ -260,6 +265,7 @@ class Settings:
                 f"Qwen TTS URL: {self.qwen_tts_base_url}",
                 f"Interviewer audio output device: {self.interviewer_audio_output_device}",
                 f"Candidate audio input device: {self.candidate_audio_input_device}",
+                f"FloCareer speaker output device: {self.flocareer_speaker_output_device}",
                 f"Runs directory: {self.runs_dir}",
                 f"Approval required before finish: {self.require_approval_before_finish}",
             )

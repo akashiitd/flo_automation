@@ -1010,6 +1010,7 @@ def _join_live(
     login_timeout_seconds: float,
     enable_code_editor_question: int | None,
     candidate_wait_timeout_seconds: float | None,
+    configure_flocareer_audio: bool = True,
 ) -> int:
     print("FloCareer approved live join")
     print("Safety mode: Launch and Join require separate approvals")
@@ -1089,6 +1090,7 @@ def _join_live(
                 else None
             ),
             candidate_wait_timeout_seconds=candidate_wait_timeout_seconds,
+            configure_flocareer_audio=configure_flocareer_audio,
         )
     except (BrowserScanError, JoinWorkflowError) as error:
         print(f"Live join failed: {error}", file=sys.stderr)
@@ -1115,6 +1117,18 @@ def _join_live(
         )
         print(f"Code editor before screenshot: {editor.before_screenshot}")
         print(f"Code editor after screenshot: {editor.after_screenshot}")
+    audio_configuration = getattr(result, "audio_configuration", None)
+    if audio_configuration is not None:
+        print(
+            "FloCareer audio: microphone "
+            f"{audio_configuration.microphone}; speaker "
+            f"{audio_configuration.speaker}"
+        )
+    else:
+        print(
+            "FloCareer audio: automatic setup was not verified; check the "
+            "visible Audio settings before starting the voice loop"
+        )
     print(f"Action log: {result.action_log_path}")
     print("Validation passed: interview joined after all required approvals")
     return 0
@@ -1842,6 +1856,7 @@ def main(
             login_timeout_seconds=args.login_timeout,
             enable_code_editor_question=args.enable_code_editor_question,
             candidate_wait_timeout_seconds=args.candidate_wait_timeout,
+            configure_flocareer_audio=True,
         )
     if args.command == "no-show":
         if args.wait_seconds < 420:

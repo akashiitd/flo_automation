@@ -21,7 +21,11 @@ from browser.code_editor_workflow import (
     CodeEditorResult,
     run_show_code_editor,
 )
-from browser.flocareer_page import FloCareerPage, ScheduledInterview
+from browser.flocareer_page import (
+    FloCareerAudioConfiguration,
+    FloCareerPage,
+    ScheduledInterview,
+)
 from browser.join_workflow import (
     ApprovalRequester,
     JoinDryRunResult,
@@ -226,6 +230,7 @@ def join_candidate_live(
     enable_code_editor_question: int | None = None,
     request_code_editor_approval: CodeEditorApprovalRequester | None = None,
     candidate_wait_timeout_seconds: float | None = None,
+    configure_flocareer_audio: bool = False,
     login_timeout_seconds: float = 180,
     progress: Callable[[str], None] | None = None,
 ) -> JoinLiveResult:
@@ -265,6 +270,32 @@ def join_candidate_live(
             action_router=router,
             request_approval=request_approval,
         )
+        audio_configuration: FloCareerAudioConfiguration | None = None
+        if configure_flocareer_audio:
+            report("Configuring FloCareer microphone and speaker automatically")
+
+            def configure_audio() -> None:
+                nonlocal audio_configuration
+                audio_configuration = flocareer.configure_audio_devices(
+                    microphone=settings.interviewer_audio_output_device,
+                    speaker=settings.flocareer_speaker_output_device,
+                )
+
+            try:
+                decision = router.route(
+                    BrowserAction.CONFIGURE_FLOCAREER_AUDIO,
+                    operation=configure_audio,
+                    candidate_identifier=result.candidate_identifier,
+                )
+                if not decision.allowed:
+                    raise AssertionError("live audio setup was unexpectedly blocked")
+            except Exception as error:
+                detail = str(error) or type(error).__name__
+                report(
+                    "FloCareer audio auto-setup could not be verified: "
+                    f"{detail}. Set the microphone and speaker manually before "
+                    "starting the voice loop."
+                )
         room = wait_for_candidate_connection(
             flocareer,
             session_dir=session_dir,
@@ -305,6 +336,7 @@ def join_candidate_live(
             result,
             room_state_log_path=room.state_log_path,
             code_editor_result=editor_result,
+            audio_configuration=audio_configuration,
         )
         wait_for_manual_end(result.candidate_identifier)
         return result

@@ -13,6 +13,7 @@ class BrowserAction(str, Enum):
     LAUNCH_INTERVIEW = "LAUNCH_INTERVIEW"
     CLICK_CONSENT_OK = "CLICK_CONSENT_OK"
     CLICK_JOIN = "CLICK_JOIN"
+    CONFIGURE_FLOCAREER_AUDIO = "CONFIGURE_FLOCAREER_AUDIO"
     OPEN_CODE_EDITOR_TAB = "OPEN_CODE_EDITOR_TAB"
     SHOW_CODE_EDITOR_TO_CANDIDATE = "SHOW_CODE_EDITOR_TO_CANDIDATE"
     MARK_NO_SHOW = "MARK_NO_SHOW"
@@ -109,6 +110,7 @@ class ActionGuard:
                     BrowserAction.FIND_CANDIDATE,
                     BrowserAction.OPEN_CANDIDATE_MENU,
                     BrowserAction.OPEN_CODE_EDITOR_TAB,
+                    BrowserAction.CONFIGURE_FLOCAREER_AUDIO,
                 }
             ),
             mode="live_join",

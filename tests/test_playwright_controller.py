@@ -25,6 +25,7 @@ class FakeLivePage:
         self.visibility = CodeEditorVisibility.HIDDEN
         self.opened_questions: list[int] = []
         self.clicked_questions: list[int] = []
+        self.audio_configuration_calls: list[tuple[str, str]] = []
 
     def open_dashboard(self, url: str) -> None:
         return None
@@ -68,6 +69,10 @@ class FakeLivePage:
         expected: CodeEditorVisibility,
     ) -> None:
         assert self.visibility is expected
+
+    def configure_audio_devices(self, *, microphone: str, speaker: str) -> object:
+        self.audio_configuration_calls.append((microphone, speaker))
+        return SimpleNamespace(microphone=microphone, speaker=speaker)
 
 
 def test_live_controller_waits_for_candidate_then_enables_editor_in_same_session(
@@ -126,3 +131,58 @@ def test_live_controller_waits_for_candidate_then_enables_editor_in_same_session
     assert flocareer.opened_questions == [13]
     assert flocareer.clicked_questions == [13]
     assert manual_end == ["candidate-a1b2c3"]
+
+
+def test_live_controller_configures_flocareer_audio_before_waiting_for_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    flocareer = FakeLivePage()
+    session_dir = tmp_path / "runs" / "join_live_audio_test"
+    screenshots = session_dir / "screenshots"
+
+    @contextmanager
+    def persistent_page(settings: object):
+        yield flocareer
+
+    def fake_join(*args: object, **kwargs: object) -> JoinLiveResult:
+        return JoinLiveResult(
+            candidate_identifier="candidate-a1b2c3",
+            candidate_found_screenshot=screenshots / "candidate_found.png",
+            launch_approval_screenshot=screenshots / "launch_approval.png",
+            consent_screenshot=None,
+            pre_call_screenshot=screenshots / "pre_call.png",
+            joined_screenshot=screenshots / "joined.png",
+            action_log_path=session_dir / "action_log.jsonl",
+        )
+
+    monkeypatch.setattr(controller, "_persistent_flocareer_page", persistent_page)
+    monkeypatch.setattr(
+        controller, "_wait_for_authenticated_dashboard", lambda *args, **kwargs: False
+    )
+    monkeypatch.setattr(controller, "run_join_live", fake_join)
+    monkeypatch.setattr(
+        controller,
+        "datetime",
+        SimpleNamespace(now=lambda: SimpleNamespace(strftime=lambda _: "test")),
+    )
+
+    result = controller.join_candidate_live(
+        SimpleNamespace(
+            runs_dir=tmp_path / "runs",
+            flocareer_url="https://example.test",
+            interviewer_audio_output_device="INTERVIEWER_TO_CALL",
+            flocareer_speaker_output_device="Jabra Evolve2 65 Flex (Bluetooth)",
+        ),
+        candidate_name="Candidate Alpha",
+        request_approval=lambda action, identifier: approval_token_for(
+            action, identifier
+        ),
+        wait_for_manual_end=lambda _: None,
+        configure_flocareer_audio=True,
+    )
+
+    assert flocareer.audio_configuration_calls == [
+        ("INTERVIEWER_TO_CALL", "Jabra Evolve2 65 Flex (Bluetooth)")
+    ]
+    assert result.audio_configuration is not None

@@ -100,6 +100,15 @@ def test_live_join_requires_separate_candidate_bound_approvals() -> None:
     ).allowed
 
 
+def test_live_join_allows_configuring_flocareer_audio_after_join() -> None:
+    guard = ActionGuard.live_join()
+
+    assert guard.decide(BrowserAction.CONFIGURE_FLOCAREER_AUDIO).allowed is True
+    assert ActionGuard.dry_run().decide(
+        BrowserAction.CONFIGURE_FLOCAREER_AUDIO
+    ).allowed is False
+
+
 def test_live_join_never_approves_hang_up_or_finish() -> None:
     guard = ActionGuard.live_join()
     candidate = "candidate-a1b2c3"

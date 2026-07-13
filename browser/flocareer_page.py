@@ -11,7 +11,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal, cast
 
-from playwright.sync_api import Locator, Page
+from playwright.sync_api import Locator, Page, TimeoutError as PlaywrightTimeoutError
 
 from browser.code_editor_workflow import (
     CodeEditorVisibility,
@@ -58,6 +58,18 @@ class InterviewPageState(str, Enum):
     CONSENT = "consent"
     PRE_CALL = "pre_call"
     JOINED = "joined"
+
+
+class FloCareerAudioSetupError(RuntimeError):
+    """Raised when FloCareer's audio controls cannot be safely verified."""
+
+
+@dataclass(frozen=True, slots=True)
+class FloCareerAudioConfiguration:
+    """The visible device labels selected in FloCareer's audio settings."""
+
+    microphone: str
+    speaker: str
 
 
 def _clean_text(value: str) -> str:
@@ -195,6 +207,117 @@ class FloCareerPage:
 
     def open_dashboard(self, url: str) -> None:
         self.page.goto(url, wait_until="domcontentloaded")
+
+    @staticmethod
+    def _audio_device_matches(visible_label: str, requested_label: str) -> bool:
+        """Match Dyte's optional ``Default - `` prefix without fuzzy matching."""
+
+        visible = _clean_text(visible_label).casefold().removesuffix(" (virtual)")
+        requested = _clean_text(requested_label).casefold()
+        return visible == requested or visible.removeprefix("default - ") == requested
+
+    def _open_audio_settings_if_needed(self) -> None:
+        microphone = self.page.locator("dyte-microphone-selector select.dyte-select")
+        speaker = self.page.locator("dyte-speaker-selector select.dyte-select")
+        if microphone.count() == 1 and speaker.count() == 1:
+            try:
+                microphone.wait_for(state="visible", timeout=500)
+                speaker.wait_for(state="visible", timeout=500)
+                return
+            except PlaywrightTimeoutError:
+                pass
+
+        settings_button = self.page.locator(
+            "dyte-settings-toggle button[aria-label='Settings']"
+        )
+        if settings_button.count() != 1:
+            raise FloCareerAudioSetupError(
+                "Expected one FloCareer Settings button and one microphone and "
+                "speaker selector"
+            )
+        settings_button.click()
+        try:
+            microphone.wait_for(state="visible", timeout=3_000)
+            speaker.wait_for(state="visible", timeout=3_000)
+        except PlaywrightTimeoutError as error:
+            raise FloCareerAudioSetupError(
+                "FloCareer Audio settings did not expose exactly one microphone "
+                "and speaker selector"
+            ) from error
+
+    def _select_audio_device(
+        self,
+        *,
+        selector: str,
+        requested_label: str,
+        kind: str,
+    ) -> str:
+        control = self.page.locator(selector)
+        if control.count() != 1:
+            raise FloCareerAudioSetupError(
+                f"Expected exactly one FloCareer {kind} selector; found "
+                f"{control.count()}"
+            )
+
+        options = control.locator("option")
+        available = [
+            (
+                _clean_text(options.nth(index).inner_text()),
+                options.nth(index).get_attribute("value"),
+            )
+            for index in range(options.count())
+        ]
+        selected = next(
+            (
+                (label, value)
+                for label, value in available
+                if value is not None and self._audio_device_matches(label, requested_label)
+            ),
+            None,
+        )
+        if selected is None:
+            labels = ", ".join(label for label, _ in available) or "none"
+            raise FloCareerAudioSetupError(
+                f"FloCareer {kind} {requested_label!r} was not available. "
+                f"Visible options: {labels}"
+            )
+        label, value = selected
+        assert value is not None
+        control.select_option(value=value)
+        selected_option = control.locator("option:checked")
+        actual = _clean_text(selected_option.inner_text())
+        if not self._audio_device_matches(actual, requested_label):
+            raise FloCareerAudioSetupError(
+                f"FloCareer {kind} verification failed: expected "
+                f"{requested_label!r}, selected {actual!r}"
+            )
+        return label
+
+    def configure_audio_devices(
+        self,
+        *,
+        microphone: str,
+        speaker: str,
+    ) -> FloCareerAudioConfiguration:
+        """Select and verify the exact live-call microphone and speaker devices."""
+
+        if not microphone.strip() or not speaker.strip():
+            raise ValueError("FloCareer microphone and speaker names are required")
+        self._open_audio_settings_if_needed()
+        selected_microphone = self._select_audio_device(
+            selector="dyte-microphone-selector select.dyte-select",
+            requested_label=microphone,
+            kind="microphone",
+        )
+        selected_speaker = self._select_audio_device(
+            selector="dyte-speaker-selector select.dyte-select",
+            requested_label=speaker,
+            kind="speaker",
+        )
+        return FloCareerAudioConfiguration(
+            microphone=selected_microphone,
+            speaker=selected_speaker,
+        )
 
     def is_login_required(self) -> bool:
         url = self.page.url.lower()

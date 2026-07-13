@@ -12,6 +12,87 @@ from browser.question_workflow import ExtractedQuestion
 from browser.room_workflow import InterviewRoomState
 
 
+def test_audio_setup_selects_virtual_microphone_and_jabra_speaker() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <dyte-microphone-selector></dyte-microphone-selector>
+            <dyte-speaker-selector></dyte-speaker-selector>
+            <script>
+              const mic = document.querySelector('dyte-microphone-selector');
+              mic.attachShadow({mode: 'open'}).innerHTML = `
+                <select class="dyte-select">
+                  <option value="jabra">Jabra Evolve2 65 Flex (Bluetooth)</option>
+                  <option value="call">INTERVIEWER_TO_CALL (Virtual)</option>
+                </select>`;
+              const speaker = document.querySelector('dyte-speaker-selector');
+              speaker.attachShadow({mode: 'open'}).innerHTML = `
+                <select class="dyte-select">
+                  <option value="default">Default - Jabra Evolve2 65 Flex (Bluetooth)</option>
+                  <option value="other">MacBook Speakers</option>
+                </select>`;
+            </script>
+            """
+        )
+
+        configured = FloCareerPage(page).configure_audio_devices(
+            microphone="INTERVIEWER_TO_CALL",
+            speaker="Jabra Evolve2 65 Flex (Bluetooth)",
+        )
+
+        assert configured.microphone == "INTERVIEWER_TO_CALL (Virtual)"
+        assert configured.speaker == "Default - Jabra Evolve2 65 Flex (Bluetooth)"
+        assert (
+            page.locator("dyte-microphone-selector select.dyte-select").input_value()
+            == "call"
+        )
+        assert (
+            page.locator("dyte-speaker-selector select.dyte-select").input_value()
+            == "default"
+        )
+        browser.close()
+
+
+def test_audio_setup_opens_dyte_settings_when_selectors_are_not_rendered() -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(
+            """
+            <dyte-settings-toggle></dyte-settings-toggle>
+            <script>
+              const toggle = document.querySelector('dyte-settings-toggle');
+              toggle.attachShadow({mode: 'open'}).innerHTML =
+                '<button aria-label="Settings">Settings</button>';
+              toggle.shadowRoot.querySelector('button').onclick = () => {
+                setTimeout(() => document.body.insertAdjacentHTML('beforeend', `
+                    <dyte-microphone-selector>
+                      <select class="dyte-select">
+                        <option value="call">INTERVIEWER_TO_CALL (Virtual)</option>
+                      </select>
+                    </dyte-microphone-selector>
+                    <dyte-speaker-selector>
+                      <select class="dyte-select">
+                        <option value="jabra">Default - Jabra Evolve2 65 Flex (Bluetooth)</option>
+                      </select>
+                    </dyte-speaker-selector>`), 400);
+              };
+            </script>
+            """
+        )
+
+        configured = FloCareerPage(page).configure_audio_devices(
+            microphone="INTERVIEWER_TO_CALL",
+            speaker="Jabra Evolve2 65 Flex (Bluetooth)",
+        )
+
+        assert configured.microphone == "INTERVIEWER_TO_CALL (Virtual)"
+        assert configured.speaker == "Default - Jabra Evolve2 65 Flex (Bluetooth)"
+        browser.close()
+
+
 def test_no_show_controls_require_exact_dialog_button_and_intermediate_level() -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)

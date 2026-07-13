@@ -177,10 +177,12 @@ def test_live_join_prompts_for_launch_consent_and_join_approvals(
         enable_code_editor_question: int | None,
         request_code_editor_approval: object,
         candidate_wait_timeout_seconds: float | None,
+        configure_flocareer_audio: bool,
     ) -> object:
         assert enable_code_editor_question is None
         assert request_code_editor_approval is None
         assert candidate_wait_timeout_seconds is None
+        assert configure_flocareer_audio is True
         for action in (
             BrowserAction.LAUNCH_INTERVIEW,
             BrowserAction.CLICK_CONSENT_OK,
@@ -262,6 +264,7 @@ def test_live_join_requests_question_bound_editor_approval_after_connection(
         assert isinstance(request, Callable)
         assert isinstance(request_editor, Callable)
         assert kwargs["enable_code_editor_question"] == 13
+        assert kwargs["configure_flocareer_audio"] is True
         for action in (
             BrowserAction.LAUNCH_INTERVIEW,
             BrowserAction.CLICK_CONSENT_OK,

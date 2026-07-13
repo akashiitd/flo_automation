@@ -350,6 +350,19 @@ Qwen player → INTERVIEWER_TO_CALL (Pass-Thru only) → FloCareer microphone
 Google Chrome for Testing → CANDIDATE_ONLY (no Pass-Thru) → candidate capture
 ```
 
+On every `join --live`, after the approved FloCareer Join action, the browser
+opens FloCareer's Audio settings and verifies these two selections:
+
+```text
+Microphone: INTERVIEWER_TO_CALL (Virtual)
+Speaker:    Default - Jabra Evolve2 65 Flex (Bluetooth)
+```
+
+The speaker label is configurable through `FLOCAREER_SPEAKER_OUTPUT_DEVICE`.
+If FloCareer does not expose either exact device, the live browser remains open
+and the command prints a warning; correct the visible settings manually before
+starting `supervise-voice-loop`.
+
 The diagnostics command only reads CoreAudio device state. It never changes
 macOS sound settings:
 
