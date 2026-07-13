@@ -174,7 +174,9 @@ def test_other_callbacks_normalize_to_the_closed_event_vocabulary() -> None:
         effect_id="effect-1", outcome="completed", question_id=7
     )
     paused = normalizer.operator_action("pause")
-    complete_turn = normalizer.operator_action("complete_turn", question_id=7)
+    complete_turn = normalizer.operator_action(
+        "complete_turn", question_id=7, action_id="turn-7-complete"
+    )
 
     assert warning.event_type is EventType.TIMER_WARNING
     assert warning.source is EventSource.TIMER
@@ -206,6 +208,8 @@ def test_other_callbacks_normalize_to_the_closed_event_vocabulary() -> None:
     assert complete_turn.event_type is EventType.TURN_COMPLETE
     assert complete_turn.source is EventSource.OPERATOR
     assert complete_turn.question_id == 7
+    with pytest.raises(ValueError, match="unique action_id"):
+        normalizer.operator_action("complete_turn", question_id=7)
     with pytest.raises(ValueError, match="unsupported timer threshold"):
         normalizer.timer_threshold("almost-time", remaining_seconds=1)
 

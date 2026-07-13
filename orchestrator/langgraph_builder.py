@@ -18,12 +18,19 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from evaluator.skill_evaluation import (
+    aggregate_skill_assessments,
+    skill_evidence_from_question,
+)
+from llm.prompts import GENERIC_FOLLOW_UP_QUESTION
 from orchestrator.effects import EffectRequest, EffectResult, EffectStatus, EffectType
-from orchestrator.events import EventSource, EventType
+from orchestrator.events import EventSource, EventType, InterviewEvent
 from orchestrator.intent_routing import IntentRouter, RoutedIntent, apply_routed_intent
 from orchestrator.intents import CandidateIntent, IntentDecision, SafeRoute
 from orchestrator.state import (
     CoverageStatus,
+    CoverageState,
+    DynamicQuestionEvaluation,
     DynamicInterviewPhase,
     DynamicInterviewState,
     InterruptRequest,
@@ -118,6 +125,7 @@ def _event_route(
     "reject_classified_intent",
     "tts_lifecycle",
     "audio_route_lifecycle",
+    "evaluation_result",
     "finish",
     "clear_event",
 ]:
@@ -145,6 +153,11 @@ def _event_route(
         EventType.AUDIO_ROUTE_FAILED,
     }:
         return "audio_route_lifecycle"
+    if state.pending_event.event_type in {
+        EventType.EVALUATION_COMPLETED,
+        EventType.EVALUATION_FAILED,
+    }:
+        return "evaluation_result"
     if state.pending_event.event_type is EventType.TURN_INTENT_CLASSIFIED:
         return "reject_classified_intent"
     if state.pending_event.event_type in {
@@ -295,14 +308,27 @@ def _ingress_route(
 
 
 def _complete_current_turn(state: DynamicInterviewState) -> DynamicStateUpdate:
-    """Accept a matching completed-turn event and release the next selection slot."""
+    """Accept a matching completed-turn event and retain its evidence for scoring."""
 
     event = state.pending_event
     if event is None or event.question_id != state.current_question_id:
         return {"pending_event": None}
+    return {
+        "capture_enabled": False,
+        "pending_event": None,
+        "phase": DynamicInterviewPhase.EVALUATING,
+    }
+
+
+def _finalize_current_question(state: DynamicInterviewState) -> DynamicStateUpdate:
+    """Release one evaluated (or legacy offline) question to planning."""
+
+    question_id = state.current_question_id
+    if question_id is None:
+        return {"pending_event": None}
     completed = [*state.completed_question_ids]
-    if event.question_id not in completed:
-        completed.append(event.question_id)
+    if question_id not in completed:
+        completed.append(question_id)
     return {
         "completed_question_ids": completed,
         "current_plan_index": None,
@@ -310,8 +336,213 @@ def _complete_current_turn(state: DynamicInterviewState) -> DynamicStateUpdate:
         "capture_enabled": False,
         "current_turn": None,
         "pending_effect": None,
+        "pending_event": None,
         "phase": DynamicInterviewPhase.SELECT_QUESTION,
     }
+
+
+def _request_evaluation(state: DynamicInterviewState) -> DynamicStateUpdate:
+    """Prepare, but never execute, a durable evaluation effect."""
+
+    question_id = state.current_question_id
+    turn = state.current_turn
+    if question_id is None or turn is None or not turn.answer_segments:
+        return {
+            "phase": DynamicInterviewPhase.NEEDS_OPERATOR,
+            "pending_interrupt": InterruptRequest(
+                kind="missing_answer_for_evaluation",
+                reason="a completed turn did not contain candidate answer evidence",
+                options=["resume", "skip", "takeover"],
+            ),
+        }
+    answer = " ".join(turn.answer_segments).strip()
+    effect = EffectRequest(
+        effect_id=f"offline-evaluate-{state.session_id}-{question_id}-{len(state.question_evaluations) + 1}",
+        effect_type=EffectType.EVALUATE_ANSWER,
+        idempotency_key=f"{state.session_id}:evaluate:{question_id}:{len(state.question_evaluations) + 1}",
+        session_id=state.session_id,
+        question_id=question_id,
+        payload={"offline_only": True, "candidate_answer": answer},
+    )
+    return {
+        "pending_effect": effect,
+        "last_effect_request": effect,
+        "last_effect_result": None,
+        "capture_enabled": False,
+        "pending_event": None,
+        "phase": DynamicInterviewPhase.EVALUATING,
+    }
+
+
+def _apply_evaluation_result(state: DynamicInterviewState) -> DynamicStateUpdate:
+    """Reduce a matching executor result after the durable evaluation boundary."""
+
+    event = state.pending_event
+    assert event is not None
+    request = state.pending_effect
+    if (
+        event.source is not EventSource.LLM
+        or request is None
+        or request.effect_type is not EffectType.EVALUATE_ANSWER
+        or event.question_id != request.question_id
+        or event.payload.get("effect_id") != request.effect_id
+    ):
+        return {"pending_event": None}
+    if event.event_type is EventType.EVALUATION_FAILED:
+        return {
+            "pending_effect": None,
+            "pending_event": None,
+            "last_effect_request": request,
+            "last_effect_result": _evaluation_effect_result(event, request),
+            "phase": DynamicInterviewPhase.NEEDS_OPERATOR,
+            "pending_interrupt": InterruptRequest(
+                kind="evaluation_failed",
+                reason=str(event.payload.get("result_summary") or "evaluation failed"),
+                options=["retry", "skip", "takeover"],
+            ),
+        }
+    raw_output = event.payload.get("output")
+    if not isinstance(raw_output, dict):
+        return _invalid_evaluation_result(event, request)
+    try:
+        evaluation = DynamicQuestionEvaluation.model_validate(raw_output)
+    except ValueError:
+        return _invalid_evaluation_result(event, request)
+    question_id = request.question_id
+    assert question_id is not None and state.current_turn is not None
+    if evaluation.question_id != question_id:
+        return _invalid_evaluation_result(event, request)
+    plan_item = next(
+        item for item in state.question_plan if item.question_id == question_id
+    )
+    evidence = skill_evidence_from_question(
+        plan_item=plan_item,
+        question_id=question_id,
+        candidate_answer=" ".join(state.current_turn.answer_segments),
+        question_score=evaluation.score,
+        confidence=evaluation.confidence,
+    )
+    all_evidence = {item.evidence_id: item for item in state.skill_evidence}
+    all_evidence.update({item.evidence_id: item for item in evidence})
+    assessments, coverage = aggregate_skill_assessments(
+        skill_parameters=state.skill_parameters, evidence=list(all_evidence.values())
+    )
+    update: DynamicStateUpdate = {
+        "question_evaluations": [*state.question_evaluations, evaluation],
+        "skill_evidence": list(all_evidence.values()),
+        "skill_assessments": assessments,
+        "coverage": coverage,
+        "pending_effect": None,
+        "pending_event": None,
+        "last_effect_request": request,
+        "last_effect_result": _evaluation_effect_result(event, request),
+    }
+    if _should_ask_generic_follow_up(state, evaluation, coverage):
+        count = state.follow_up_counts.get(str(question_id), 0) + 1
+        effect = EffectRequest(
+            effect_id=f"offline-follow-up-{state.session_id}-{question_id}-{count}",
+            effect_type=EffectType.SPEAK_TEXT,
+            idempotency_key=f"{state.session_id}:follow-up:{question_id}:{count}",
+            session_id=state.session_id,
+            question_id=question_id,
+            payload={
+                "offline_only": True,
+                "kind": "generic-follow-up",
+                "text": GENERIC_FOLLOW_UP_QUESTION,
+            },
+        )
+        return {
+            **update,
+            "follow_up_counts": {**state.follow_up_counts, str(question_id): count},
+            "current_turn": TurnState(question_id=question_id, is_follow_up=True),
+            "pending_effect": effect,
+            "last_effect_request": effect,
+            "last_effect_result": None,
+            "phase": DynamicInterviewPhase.RUN_TURN,
+        }
+    return {**update, **_finalize_current_question(state)}
+
+
+def _invalid_evaluation_result(
+    event: InterviewEvent, request: EffectRequest
+) -> DynamicStateUpdate:
+    """Require an operator when a result event fails the persisted schema."""
+
+    return {
+        "pending_effect": None,
+        "pending_event": None,
+        "last_effect_request": request,
+        "last_effect_result": _evaluation_effect_result(event, request),
+        "phase": DynamicInterviewPhase.NEEDS_OPERATOR,
+        "pending_interrupt": InterruptRequest(
+            kind="invalid_evaluation_result",
+            reason="the local evaluator returned an invalid result payload",
+            options=["retry", "skip", "takeover"],
+        ),
+    }
+
+
+def _evaluation_effect_result(
+    event: InterviewEvent, request: EffectRequest
+) -> EffectResult:
+    """Record the terminal result event that an evaluator executor emitted."""
+
+    return EffectResult(
+        effect_id=request.effect_id,
+        session_id=request.session_id,
+        effect_type=request.effect_type,
+        idempotency_key=request.idempotency_key,
+        payload_hash=request.payload_hash,
+        status=(
+            EffectStatus.COMPLETED
+            if event.event_type is EventType.EVALUATION_COMPLETED
+            else EffectStatus.FAILED
+        ),
+        result_summary=str(event.payload.get("result_summary") or "evaluation result"),
+        completed_at=event.occurred_at,
+    )
+
+
+def _should_ask_generic_follow_up(
+    state: DynamicInterviewState,
+    evaluation: DynamicQuestionEvaluation,
+    coverage: dict[str, CoverageState],
+) -> bool:
+    """Permit only the existing generic prompt for a specific remaining gap."""
+
+    if state.current_question_id is None or state.current_turn is None:
+        return False
+    if state.current_turn.is_follow_up or state.remaining_seconds < 90:
+        return False
+    if state.follow_up_counts.get(str(state.current_question_id), 0) >= 1:
+        return False
+    if evaluation.follow_up != GENERIC_FOLLOW_UP_QUESTION:
+        return False
+    plan_item = next(
+        item
+        for item in state.question_plan
+        if item.question_id == state.current_question_id
+    )
+    mapped_skills = [
+        *plan_item.target_skill_ids,
+        *plan_item.mandatory_skill_coverage,
+    ]
+    has_gap = any(
+        coverage.get(skill_id) is None
+        or coverage[skill_id].status is not CoverageStatus.SUFFICIENT
+        for skill_id in mapped_skills
+    )
+    return has_gap and (evaluation.score <= 3 or evaluation.confidence < 0.70)
+
+
+def _post_evaluation_route(
+    state: DynamicInterviewState,
+) -> Literal["question_planning", "done"]:
+    """Plan only after evaluation finalizes a question; preserve recovery states."""
+
+    if state.phase is DynamicInterviewPhase.SELECT_QUESTION:
+        return "question_planning"
+    return "done"
 
 
 def _apply_tts_lifecycle(state: DynamicInterviewState) -> DynamicStateUpdate:
@@ -659,6 +890,7 @@ def _select_next_question(state: DynamicInterviewState) -> DynamicStateUpdate:
         "current_turn": TurnState(question_id=question.id),
         "pending_effect": effect,
         "last_effect_request": effect,
+        "last_effect_result": None,
         "pending_event": None,
         "phase": DynamicInterviewPhase.RUN_TURN,
     }
@@ -718,12 +950,14 @@ def build_offline_interview_graph(
     *,
     checkpointer: BaseCheckpointSaver[Any],
     intent_router: IntentRouter | None = None,
+    evaluation_enabled: bool = False,
 ) -> Any:
-    """Build the Phase 5 parent graph for saved offline event fixtures only.
+    """Build the offline controller graph without executing external effects.
 
     ``build_question_planning_subgraph`` is deliberately compiled and embedded
-    here as the first real subgraph seam.  Future turn, evaluation, and recovery
-    subgraphs can share the same typed parent state without gaining an executor.
+    here as the first real subgraph seam.  When ``evaluation_enabled`` is set,
+    completed turns emit an ``EVALUATE_ANSWER`` effect for a separate durable
+    executor; the graph never receives a provider client.
     """
 
     planning_subgraph = build_question_planning_subgraph()
@@ -731,6 +965,10 @@ def build_offline_interview_graph(
     builder = StateGraph(DynamicInterviewState)
     builder.add_node("record_event", _record_offline_event)
     builder.add_node("complete_turn", _complete_current_turn)
+    builder.add_node("finalize_question", _finalize_current_question)
+    if evaluation_enabled:
+        builder.add_node("evaluate_turn", _request_evaluation)
+    builder.add_node("evaluation_result", _apply_evaluation_result)
     builder.add_node("classify_intent", _classify_candidate_transcript(router))
     builder.add_node("reject_classified_intent", _rejected_intent_event)
     builder.add_node("tts_lifecycle", _apply_tts_lifecycle)
@@ -753,11 +991,17 @@ def build_offline_interview_graph(
             "reject_classified_intent": "reject_classified_intent",
             "tts_lifecycle": "tts_lifecycle",
             "audio_route_lifecycle": "audio_route_lifecycle",
+            "evaluation_result": "evaluation_result",
             "finish": "finish",
             "clear_event": "clear_event",
         },
     )
-    builder.add_edge("complete_turn", "question_planning")
+    if evaluation_enabled:
+        builder.add_edge("complete_turn", "evaluate_turn")
+        builder.add_edge("evaluate_turn", END)
+    else:
+        builder.add_edge("complete_turn", "finalize_question")
+    builder.add_edge("finalize_question", "question_planning")
     builder.add_conditional_edges(
         "classify_intent",
         _intent_action_route,
@@ -766,6 +1010,11 @@ def build_offline_interview_graph(
     builder.add_edge("reject_classified_intent", END)
     builder.add_edge("tts_lifecycle", END)
     builder.add_edge("audio_route_lifecycle", END)
+    builder.add_conditional_edges(
+        "evaluation_result",
+        _post_evaluation_route,
+        {"question_planning": "question_planning", "done": END},
+    )
     builder.add_edge("question_planning", END)
     builder.add_edge("finish", END)
     builder.add_edge("clear_event", END)

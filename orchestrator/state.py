@@ -73,6 +73,7 @@ class DynamicInterviewPhase(StrEnum):
     INTRODUCTION = "INTRODUCTION"
     SELECT_QUESTION = "SELECT_QUESTION"
     RUN_TURN = "RUN_TURN"
+    EVALUATING = "EVALUATING"
     UPDATE_COVERAGE = "UPDATE_COVERAGE"
     CANDIDATE_QUESTIONS = "CANDIDATE_QUESTIONS"
     CLOSING = "CLOSING"
@@ -228,6 +229,7 @@ class TurnState(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     question_id: int = Field(ge=1)
+    is_follow_up: bool = False
     answer_segments: list[Annotated[str, Field(max_length=MAX_SEGMENT_CHARACTERS)]] = (
         Field(default_factory=list, max_length=MAX_TURN_SEGMENTS)
     )
@@ -341,6 +343,7 @@ class DynamicInterviewState(BaseModel):
         default_factory=list, max_length=MAX_INTENT_HISTORY
     )
     repeat_counts: dict[str, int] = Field(default_factory=dict)
+    follow_up_counts: dict[str, int] = Field(default_factory=dict)
     clarification_counts: dict[str, int] = Field(default_factory=dict)
     ambiguity_counts: dict[str, int] = Field(default_factory=dict)
     audio_problem_count: int = Field(default=0, ge=0)
@@ -525,6 +528,7 @@ class DynamicInterviewState(BaseModel):
             int(question_id)
             for question_id in {
                 *self.repeat_counts,
+                *self.follow_up_counts,
                 *self.clarification_counts,
                 *self.ambiguity_counts,
             }

@@ -9,6 +9,8 @@ from pathlib import Path
 from app.questions import InterviewQuestion
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
+from llm.prompts import GENERIC_FOLLOW_UP_QUESTION
+from llm.schemas import ProviderMetadata, StructuredGeneration
 
 from orchestrator.effects import EffectStatus, EffectType
 from orchestrator.event_adapters import EventNormalizer
@@ -17,6 +19,7 @@ from orchestrator.intents import CandidateIntent
 from orchestrator.graph import InterviewController
 from orchestrator.intent_routing import IntentRouter
 from orchestrator.langgraph_builder import build_offline_interview_graph
+from orchestrator.offline_evaluation_runtime import build_offline_evaluation_runtime
 from orchestrator.state import (
     CoverageState,
     CoverageStatus,
@@ -66,8 +69,16 @@ def _state(*, remaining_seconds: float = 600.0) -> DynamicInterviewState:
         session_id="offline-fixture-session",
         candidate_identifier="offline-fixture-candidate",
         questions=[
-            QuestionState(id=1, question_text="Explain API retry handling."),
-            QuestionState(id=2, question_text="Explain Python exception handling."),
+            QuestionState(
+                id=1,
+                question_text="Explain API retry handling.",
+                ideal_answer="Use bounded retries and idempotency keys.",
+            ),
+            QuestionState(
+                id=2,
+                question_text="Explain Python exception handling.",
+                ideal_answer="Handle expected errors explicitly.",
+            ),
         ],
         skill_parameters=[
             SkillParameter(
@@ -298,6 +309,378 @@ def test_time_limit_event_routes_to_done_with_auditable_skip_reasons() -> None:
         1: "runtime time limit reached",
         2: "runtime time limit reached",
     }
+
+
+def test_evaluation_updates_mapped_skill_coverage_and_asks_one_generic_follow_up() -> (
+    None
+):
+    class Evaluator:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate_structured(
+            self, *args: object, **kwargs: object
+        ) -> dict[str, object]:
+            self.calls += 1
+            confidence = 0.6 if self.calls == 1 else 0.9
+            score = 3 if self.calls == 1 else 4
+            return StructuredGeneration(
+                output={
+                    "question_id": 1,
+                    "score": score,
+                    "rating_label": "Average" if score == 3 else "Good",
+                    "evidence": ["Candidate described retries."],
+                    "follow_up": "How would you implement exponential backoff?",
+                    "feedback": "Candidate answer.",
+                    "confidence": confidence,
+                },
+                metadata=ProviderMetadata(
+                    provider="test",
+                    model="test-model",
+                    request_purpose="feedback_draft",
+                    latency_ms=1,
+                    input_tokens=1,
+                    output_tokens=1,
+                    estimated_cost_usd=0,
+                ),
+            ).model_dump(mode="json")
+
+    async def run() -> tuple[dict[str, object], dict[str, object], Evaluator]:
+        evaluator = Evaluator()
+        graph = build_offline_interview_graph(
+            checkpointer=InMemorySaver(), evaluation_enabled=True
+        )
+        state = _state()
+        config = _config(state.thread_id)
+        started = await graph.ainvoke(
+            {**state.model_dump(mode="python"), "pending_event": _load_events()[0]},
+            config=config,
+        )
+        await graph.ainvoke(
+            {
+                "pending_event": _transcript_event(
+                    started,
+                    event_id="answer-one",
+                    transcript="I would use idempotency keys and bounded retries.",
+                )
+            },
+            config=config,
+        )
+        evaluation_request = await graph.ainvoke(
+            {
+                "pending_event": EventNormalizer(
+                    session_id=state.session_id
+                ).operator_action("complete_turn", question_id=1, action_id="first")
+            },
+            config=config,
+        )
+        follow_up = await graph.ainvoke(
+            {
+                "pending_event": EventNormalizer(
+                    session_id=state.session_id
+                ).evaluation_result(
+                    effect_id=evaluation_request["pending_effect"].effect_id,
+                    outcome="completed",
+                    question_id=1,
+                    output={
+                        "question_id": 1,
+                        "score": 3,
+                        "rating_label": "Average",
+                        "evidence": ["Candidate described retries."],
+                        "follow_up": GENERIC_FOLLOW_UP_QUESTION,
+                        "feedback": "Candidate answer.",
+                        "confidence": 0.6,
+                    },
+                    result_summary="answer evaluated",
+                )
+            },
+            config=config,
+        )
+        await graph.ainvoke(
+            {
+                "pending_event": _transcript_event(
+                    follow_up,
+                    event_id="follow-up-answer",
+                    transcript="I would cap delay and add jitter before each retry.",
+                )
+            },
+            config=config,
+        )
+        second_request = await graph.ainvoke(
+            {
+                "pending_event": EventNormalizer(
+                    session_id=state.session_id
+                ).operator_action("complete_turn", question_id=1, action_id="follow-up")
+            },
+            config=config,
+        )
+        completed = await graph.ainvoke(
+            {
+                "pending_event": EventNormalizer(
+                    session_id=state.session_id
+                ).evaluation_result(
+                    effect_id=second_request["pending_effect"].effect_id,
+                    outcome="completed",
+                    question_id=1,
+                    output={
+                        "question_id": 1,
+                        "score": 4,
+                        "rating_label": "Good",
+                        "evidence": ["Candidate described jitter."],
+                        "follow_up": GENERIC_FOLLOW_UP_QUESTION,
+                        "feedback": "Candidate answer.",
+                        "confidence": 0.9,
+                    },
+                    result_summary="answer evaluated",
+                )
+            },
+            config=config,
+        )
+        return follow_up, completed, evaluator
+
+    follow_up, completed, evaluator = asyncio.run(run())
+
+    assert follow_up["pending_effect"].payload["text"] == GENERIC_FOLLOW_UP_QUESTION
+    assert follow_up["follow_up_counts"] == {"1": 1}
+    assert follow_up["skill_assessments"][0].proposed_score is None
+    assert completed["current_question_id"] == 2
+    assert completed["coverage"]["api"].status is CoverageStatus.SUFFICIENT
+    assert len(completed["question_evaluations"]) == 2
+    assert evaluator.calls == 0
+
+
+def test_evaluation_skips_generic_follow_up_when_time_is_low() -> None:
+    class Evaluator:
+        async def generate_structured(
+            self, *args: object, **kwargs: object
+        ) -> dict[str, object]:
+            return StructuredGeneration(
+                output={
+                    "question_id": 1,
+                    "score": 2,
+                    "rating_label": "Weak",
+                    "evidence": ["Candidate mentioned retries."],
+                    "follow_up": "What would you change?",
+                    "feedback": "Candidate answer.",
+                    "confidence": 0.5,
+                },
+                metadata=ProviderMetadata(
+                    provider="test",
+                    model="test-model",
+                    request_purpose="feedback_draft",
+                    latency_ms=1,
+                    input_tokens=1,
+                    output_tokens=1,
+                    estimated_cost_usd=0,
+                ),
+            ).model_dump(mode="json")
+
+    async def run() -> dict[str, object]:
+        graph = build_offline_interview_graph(
+            checkpointer=InMemorySaver(), evaluation_enabled=True
+        )
+        base_state = _state(remaining_seconds=60)
+        state = base_state.model_copy(
+            update={
+                "question_plan": [
+                    item.model_copy(update={"estimated_minutes": 0.5})
+                    for item in base_state.question_plan
+                ]
+            }
+        )
+        config = _config(state.thread_id)
+        started = await graph.ainvoke(
+            {**state.model_dump(mode="python"), "pending_event": _load_events()[0]},
+            config=config,
+        )
+        await graph.ainvoke(
+            {
+                "pending_event": _transcript_event(
+                    started, event_id="low-time-answer", transcript="I would retry."
+                )
+            },
+            config=config,
+        )
+        request = await graph.ainvoke(
+            {
+                "pending_event": EventNormalizer(
+                    session_id=state.session_id
+                ).operator_action("complete_turn", question_id=1, action_id="low-time")
+            },
+            config=config,
+        )
+        return await graph.ainvoke(
+            {
+                "pending_event": EventNormalizer(
+                    session_id=state.session_id
+                ).evaluation_result(
+                    effect_id=request["pending_effect"].effect_id,
+                    outcome="completed",
+                    question_id=1,
+                    output={
+                        "question_id": 1,
+                        "score": 2,
+                        "rating_label": "Weak",
+                        "evidence": ["Candidate mentioned retries."],
+                        "follow_up": GENERIC_FOLLOW_UP_QUESTION,
+                        "feedback": "Candidate answer.",
+                        "confidence": 0.5,
+                    },
+                    result_summary="answer evaluated",
+                )
+            },
+            config=config,
+        )
+
+    result = asyncio.run(run())
+
+    assert result["follow_up_counts"] == {}
+    assert result["current_question_id"] == 2
+
+
+def test_evaluation_result_must_match_the_pending_question() -> None:
+    async def run() -> dict[str, object]:
+        graph = build_offline_interview_graph(
+            checkpointer=InMemorySaver(), evaluation_enabled=True
+        )
+        state = _state()
+        config = _config(state.thread_id)
+        started = await graph.ainvoke(
+            {**state.model_dump(mode="python"), "pending_event": _load_events()[0]},
+            config=config,
+        )
+        await graph.ainvoke(
+            {
+                "pending_event": _transcript_event(
+                    started, event_id="mismatched-answer", transcript="I would retry."
+                )
+            },
+            config=config,
+        )
+        request = await graph.ainvoke(
+            {
+                "pending_event": EventNormalizer(
+                    session_id=state.session_id
+                ).operator_action(
+                    "complete_turn", question_id=1, action_id="mismatched-complete"
+                )
+            },
+            config=config,
+        )
+        return await graph.ainvoke(
+            {
+                "pending_event": EventNormalizer(
+                    session_id=state.session_id
+                ).evaluation_result(
+                    effect_id=request["pending_effect"].effect_id,
+                    outcome="completed",
+                    question_id=1,
+                    output={
+                        "question_id": 2,
+                        "score": 4,
+                        "rating_label": "Good",
+                        "evidence": ["invalid result"],
+                        "follow_up": GENERIC_FOLLOW_UP_QUESTION,
+                        "feedback": "invalid result",
+                        "confidence": 0.9,
+                    },
+                    result_summary="answer evaluated",
+                )
+            },
+            config=config,
+        )
+
+    result = asyncio.run(run())
+
+    assert result["phase"] is DynamicInterviewPhase.NEEDS_OPERATOR
+    assert result["pending_interrupt"].kind == "invalid_evaluation_result"
+
+
+def test_offline_runtime_evaluates_and_writes_a_local_skill_preview(
+    tmp_path: Path,
+) -> None:
+    class Evaluator:
+        async def generate_structured(
+            self, *args: object, **kwargs: object
+        ) -> dict[str, object]:
+            return StructuredGeneration(
+                output={
+                    "question_id": 1,
+                    "score": 4,
+                    "rating_label": "Good",
+                    "evidence": ["Candidate described bounded retries."],
+                    "follow_up": "What would you change?",
+                    "feedback": "Candidate answer.",
+                    "confidence": 0.9,
+                },
+                metadata=ProviderMetadata(
+                    provider="test",
+                    model="test-model",
+                    request_purpose="feedback_draft",
+                    latency_ms=1,
+                    input_tokens=1,
+                    output_tokens=1,
+                    estimated_cost_usd=0,
+                ),
+            ).model_dump(mode="json")
+
+    async def run() -> tuple[dict[str, object], tuple[Path, Path] | None]:
+        state = _state()
+        normalizer = EventNormalizer(session_id=state.session_id)
+        runtime = build_offline_evaluation_runtime(
+            checkpointer=InMemorySaver(),
+            evaluator=Evaluator(),
+            questions=state.questions,
+            session_id=state.session_id,
+            ledger_path=tmp_path / "effects.sqlite",
+            result_path=tmp_path / "evaluation-results.sqlite",
+            preview_root=tmp_path / "sessions",
+        )
+        config = _config(state.thread_id)
+        started = await runtime.advance(
+            {**state.model_dump(mode="python"), "pending_event": _load_events()[0]},
+            config=config,
+        )
+        spoken = await runtime.advance(
+            {
+                "pending_event": normalizer.tts_result(
+                    effect_id=started.state["pending_effect"].effect_id,
+                    outcome="completed",
+                    question_id=1,
+                    result_summary="played question",
+                )
+            },
+            config=config,
+        )
+        await runtime.advance(
+            {
+                "pending_event": _transcript_event(
+                    spoken.state,
+                    event_id="runtime-answer",
+                    transcript="I use bounded retries and idempotency keys.",
+                )
+            },
+            config=config,
+        )
+        completed = await runtime.advance(
+            {
+                "pending_event": normalizer.operator_action(
+                    "complete_turn", question_id=1, action_id="runtime-complete"
+                )
+            },
+            config=config,
+        )
+        return completed.state, completed.preview_paths
+
+    state, preview_paths = asyncio.run(run())
+
+    assert state["current_question_id"] == 2
+    assert preview_paths is not None
+    assert preview_paths[0].exists()
+    assert preview_paths[1].exists()
+    assert "does not select FloCareer stars" in preview_paths[1].read_text(
+        encoding="utf-8"
+    )
 
 
 def test_classified_repeat_is_durable_and_prepares_a_safe_replay_effect() -> None:

@@ -6,6 +6,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from pydantic import JsonValue
+
 from orchestrator.event_ledger import EventLedger
 from orchestrator.event_identity import stable_event_id
 from orchestrator.events import EventSource, EventType, InterviewEvent
@@ -228,11 +230,41 @@ class EventNormalizer:
             identity={"effect_id": effect_id, "outcome": outcome},
         )
 
+    def evaluation_result(
+        self,
+        *,
+        effect_id: str,
+        outcome: Literal["completed", "failed"],
+        question_id: int,
+        output: dict[str, JsonValue] | None = None,
+        result_summary: str,
+    ) -> InterviewEvent:
+        """Normalize a cached evaluator outcome for graph reduction."""
+
+        event_type = {
+            "completed": EventType.EVALUATION_COMPLETED,
+            "failed": EventType.EVALUATION_FAILED,
+        }[outcome]
+        return self._event(
+            event_type=event_type,
+            source=EventSource.LLM,
+            occurred_at=self._now(),
+            question_id=question_id,
+            payload={
+                "effect_id": effect_id,
+                "outcome": outcome,
+                "result_summary": result_summary,
+                **({"output": output} if output is not None else {}),
+            },
+            identity={"effect_id": effect_id, "outcome": outcome},
+        )
+
     def operator_action(
         self,
         action: Literal["pause", "takeover", "resume", "stop", "complete_turn"],
         *,
         question_id: int | None = None,
+        action_id: str | None = None,
     ) -> InterviewEvent:
         """Normalize a supervised operator control without granting an effect."""
 
@@ -243,15 +275,25 @@ class EventNormalizer:
             "stop": EventType.OPERATOR_STOP,
             "complete_turn": EventType.TURN_COMPLETE,
         }[action]
-        if action == "complete_turn" and question_id is None:
-            raise ValueError("complete_turn requires an active question_id")
+        if action == "complete_turn":
+            if question_id is None:
+                raise ValueError("complete_turn requires an active question_id")
+            if not (action_id or "").strip():
+                raise ValueError("complete_turn requires a unique action_id")
         return self._event(
             event_type=event_type,
             source=EventSource.OPERATOR,
             occurred_at=self._now(),
             question_id=question_id,
-            payload={"action": action},
-            identity={"action": action, "question_id": question_id},
+            payload={
+                "action": action,
+                **({"action_id": action_id} if action_id is not None else {}),
+            },
+            identity={
+                "action": action,
+                "question_id": question_id,
+                "action_id": action_id,
+            },
         )
 
     def _callback_timestamp(self, segment: object) -> datetime:
